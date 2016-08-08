@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<?import javafx.geometry.Insets?>
+<?import javafx.scene.control.*?>
+<?import javafx.scene.layout.*?>
+<?import javafx.scene.text.Font?>
+<GridPane hgap="10.0" maxHeight="-Infinity" maxWidth="-Infinity" minHeight="-Infinity" minWidth="-Infinity" prefHeight="150.0" prefWidth="400.0" xmlns="http://javafx.com/javafx/8" xmlns:fx="http://javafx.com/fxml/1" fx:controller="com.chengsoft.App">
+  <columnConstraints>
+    <ColumnConstraints fillWidth="false" hgrow="SOMETIMES" maxWidth="-Infinity" minWidth="10.0" prefWidth="100.0" />
+    <ColumnConstraints hgrow="SOMETIMES" minWidth="10.0" prefWidth="100.0" />
+  </columnConstraints>
+  <rowConstraints>
+    <RowConstraints maxHeight="-Infinity" minHeight="10.0" prefHeight="50.0" vgrow="SOMETIMES" />
+    <RowConstraints maxHeight="-Infinity" minHeight="10.0" prefHeight="50.0" vgrow="SOMETIMES" />
+    <RowConstraints maxHeight="-Infinity" minHeight="10.0" prefHeight="30.0" vgrow="SOMETIMES" />
+  </rowConstraints>
+   <children>
+      <Label text="SkanIt RE Excel" GridPane.halignment="RIGHT">
+         <font>
+            <Font size="14.0" />
+         </font></Label>
+      <TextField fx:id="textFieldInputExcel" GridPane.columnIndex="1" />
+      <TextField fx:id="textFieldOutputFolder" GridPane.columnIndex="1" GridPane.rowIndex="1" />
+      <Label text="Output Folder" GridPane.halignment="RIGHT" GridPane.rowIndex="1">
+         <font>
+            <Font size="14.0" />
+         </font></Label>
+      <HBox alignment="CENTER" prefHeight="100.0" prefWidth="200.0" spacing="100.0" GridPane.columnIndex="1" GridPane.rowIndex="2">
+         <children>
+            <Button fx:id="buttonProcess" mnemonicParsing="false" prefWidth="100.0" text="Process">
+               <font>
+                  <Font size="18.0" />
+               </font>
+            </Button>
+            <Button fx:id="buttonCancel" mnemonicParsing="false" prefWidth="100.0" text="Cancel">
+               <font>
+                  <Font size="18.0" />
+               </font>
+            </Button>
+         </children>
+      </HBox>
+   </children>
+   <padding>
+      <Insets right="10.0" />
+   </padding>
+</GridPane>
