@@ -38,7 +38,8 @@ class PhotoProcessor {
             paths.filter(p -> {
                 String mimetype = new MimetypesFileTypeMap().getContentType(p.toFile());
                 String type = mimetype.split("/")[0];
-                return type.equals("image");
+                boolean isBitmap = com.google.common.io.Files.getFileExtension(p.toString()).equalsIgnoreCase("bmp");
+                return type.equals("image") || isBitmap;
             })
                     .filter(p -> caseInsensitiveIgnoreFolders.stream()
                             .noneMatch(ignoreFolder -> p.toString().toLowerCase().contains(ignoreFolder)))
