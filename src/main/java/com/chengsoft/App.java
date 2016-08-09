@@ -1,52 +1,75 @@
 package com.chengsoft;
 
 import com.google.common.base.Strings;
+import com.google.common.collect.ImmutableList;
 import javafx.application.Application;
 import javafx.application.Platform;
 import javafx.fxml.FXML;
 import javafx.fxml.FXMLLoader;
 import javafx.fxml.Initializable;
-import javafx.scene.*;
 import javafx.scene.Cursor;
+import javafx.scene.Parent;
+import javafx.scene.Scene;
 import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
+import javafx.scene.control.TextArea;
 import javafx.scene.control.TextField;
+import javafx.scene.input.DragEvent;
 import javafx.scene.input.Dragboard;
 import javafx.scene.input.TransferMode;
-import javafx.stage.FileChooser;
+import javafx.stage.DirectoryChooser;
 import javafx.stage.Stage;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
 import java.awt.*;
 import java.io.File;
 import java.net.URL;
-import java.nio.file.*;
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.List;
 import java.util.Optional;
 import java.util.ResourceBundle;
 import java.util.function.Predicate;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * Created by Tim on 2/14/2016.
  */
 public class App extends Application implements Initializable {
+    private static final Logger logger = LogManager.getLogger(App.class);
+
     @FXML
-    private TextField textFieldInputExcel;
+    private TextField textFieldSourceFolder;
     @FXML
-    private TextField textFieldOutputFolder;
+    private TextField textFieldDestFolder;
+    @FXML
+    private TextField textFieldIgnoreFolders;
     @FXML
     private Button buttonProcess;
     @FXML
     private Button buttonCancel;
 
-    private FileChooser fileChooser = new FileChooser();
-    private static Stage stage;
+    private DirectoryChooser directoryChooser = new DirectoryChooser();
 
-    private static PathMatcher EXCEL_MATCHER = FileSystems.getDefault().getPathMatcher("glob:**.{xls,xlsx}");
+    private static Stage stage;
 
     private Desktop desktop = Desktop.getDesktop();
 
-    public static void main(String[] args) {launch(args);}
+    @FXML
+    private TextArea textAreaLoggingView;
+
+    // Predicate for accepting a folder
+    private static final Predicate<Dragboard> SINGLE_FOLDER_PREDICATE = db ->
+            db.hasFiles()
+                    && db.getFiles().size() == 1
+                    && db.getFiles().get(0).isDirectory();
+
+    public static void main(String[] args) {
+        launch(args);
+    }
 
     @Override
     public void start(Stage stage) throws Exception {
@@ -59,71 +82,47 @@ public class App extends Application implements Initializable {
 
     @Override
     public void initialize(URL location, ResourceBundle resources) {
+        TextAreaAppender.setTextArea(textAreaLoggingView);
+
         buttonCancel.setOnAction(e -> Platform.exit());
 
-        // Open file chooser when textFieldInputExcel is clicked
-        textFieldInputExcel.setOnMouseClicked(event -> {
-            configureFileChooser(fileChooser);
-            Optional<File> file = Optional.ofNullable(fileChooser.showOpenDialog(this.stage));
-            file.ifPresent(f -> {
-                textFieldInputExcel.setText(f.getAbsolutePath());
-                textFieldOutputFolder.setText(f.getParentFile().getAbsolutePath());
-            });
-        });
-
-        // Predicate for accepting excel file
-        Predicate<Dragboard> singleExcelFilePredicate = db ->
-                db.hasFiles()
-                && db.getFiles().size() == 1
-                && EXCEL_MATCHER.matches(db.getFiles().get(0).toPath());
+        // Open directory chooser when textFieldSourceFolder or textFieldDestFolder are clicked
+        textFieldSourceFolder.setOnMouseClicked(e -> this.chooseFolder(textFieldSourceFolder, "source"));
+        textFieldDestFolder.setOnMouseClicked(e -> this.chooseFolder(textFieldDestFolder, "destination"));
 
         // Drag and drop support
-        textFieldInputExcel.setOnDragOver(e -> {
-            Dragboard db = e.getDragboard();
-            if (singleExcelFilePredicate.test(db)) {
-                e.acceptTransferModes(TransferMode.ANY);
-            } else {
-                e.consume();
-            }
-        });
-        textFieldInputExcel.setOnDragDropped(e -> {
-            Dragboard db = e.getDragboard();
-            boolean success = false;
-            if (singleExcelFilePredicate.test(db)) {
-                success = true;
-                File droppedFile = db.getFiles().get(0);
-                textFieldInputExcel.setText(droppedFile.getAbsolutePath());
-                textFieldOutputFolder.setText(droppedFile.getParentFile().getAbsolutePath());
-            }
-            e.setDropCompleted(success);
-            e.consume();
-        });
+        textFieldSourceFolder.setOnDragOver(this::onDragOver);
+        textFieldDestFolder.setOnDragOver(this::onDragOver);
+        textFieldSourceFolder.setOnDragDropped(e -> this.onDragDropped(textFieldSourceFolder, e));
+        textFieldDestFolder.setOnDragDropped(e -> this.onDragDropped(textFieldDestFolder, e));
 
         buttonProcess.setOnAction(e -> {
-            if (Strings.isNullOrEmpty(textFieldInputExcel.getText())) {
-                showFatalError("There must be an excel sheet to process");
+            if (Strings.isNullOrEmpty(textFieldSourceFolder.getText())) {
+                showFatalError("There must be an source image folder to process");
                 return;
             }
 
-            if (Strings.isNullOrEmpty(textFieldOutputFolder.getText())) {
-                showFatalError("There must be an output folder to process");
+            if (Strings.isNullOrEmpty(textFieldDestFolder.getText())) {
+                showFatalError("There must be an destination image folder to process");
                 return;
             }
 
-            Path outputFolderPath = Paths.get(textFieldOutputFolder.getText());
-            if (!Files.isDirectory(outputFolderPath)) {
-                showFatalError("The output folder must be a valid directory");
+            Path destFolderPath = Paths.get(textFieldDestFolder.getText());
+            if (!Files.isDirectory(destFolderPath)) {
+                showFatalError("The destination image folder must be a valid directory");
                 return;
             }
 
-            DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss");
-            String formattedDate = formatter.format(LocalDateTime.now());
-            String outputExcelFilename = String.format("Processed_Spectra_%s.xlsx", formattedDate);
-            Path outputExcelPath = outputFolderPath.resolve(outputExcelFilename);
+            List<String> ignoreFolderList = ImmutableList.of();
+            if (!Strings.isNullOrEmpty(textFieldIgnoreFolders.getText())) {
+                ignoreFolderList = Stream.of(textFieldIgnoreFolders.getText().split(","))
+                        .map(String::trim)
+                        .collect(Collectors.toList());
+            }
+
             try {
                 stage.getScene().setCursor(Cursor.WAIT);
-
-                PhotoProcessor.processAndWriteExcel(textFieldInputExcel.getText(), outputExcelPath.toAbsolutePath().toString());
+                PhotoProcessor.copyPhotos(textFieldSourceFolder.getText(), textFieldDestFolder.getText(), ignoreFolderList);
 
                 stage.getScene().setCursor(Cursor.DEFAULT);
 
@@ -132,7 +131,7 @@ public class App extends Application implements Initializable {
                 alert.setHeaderText("Processing has completed!");
                 alert.showAndWait();
 
-                desktop.open(outputExcelPath.toFile());
+                desktop.open(destFolderPath.toFile());
             } catch (Exception e1) {
                 showFatalError("Failed to process data", e1.getMessage());
             }
@@ -152,12 +151,35 @@ public class App extends Application implements Initializable {
         alert.show();
     }
 
-    private static void configureFileChooser(final FileChooser fileChooser) {
-        fileChooser.setTitle("Choose file");
-        fileChooser.getExtensionFilters()
-            .add(new FileChooser.ExtensionFilter("Excel Files (*.xls, *.xlsx)", "*.xls", "*.xlsx"));
-        fileChooser.setInitialDirectory(
-                new File(System.getProperty("user.home"))
-        );
+    private void chooseFolder(TextField textField, String type) {
+        directoryChooser.setTitle(String.format("Choose %s image folder", type));
+        directoryChooser.setInitialDirectory(new File(System.getProperty("user.home")));
+        Optional.ofNullable(directoryChooser.showDialog(this.stage))
+                .ifPresent(f -> {
+                    logger.info("{} folder set as {}", type, f.getAbsolutePath());
+                    textField.setText(f.getAbsolutePath());
+                });
     }
+
+    private void onDragOver(DragEvent e) {
+        Dragboard db = e.getDragboard();
+        if (SINGLE_FOLDER_PREDICATE.test(db)) {
+            e.acceptTransferModes(TransferMode.ANY);
+        } else {
+            e.consume();
+        }
+    }
+
+    private void onDragDropped(TextField textField, DragEvent e) {
+        Dragboard db = e.getDragboard();
+        boolean success = false;
+        if (SINGLE_FOLDER_PREDICATE.test(db)) {
+            success = true;
+            File droppedFolder = db.getFiles().get(0);
+            textField.setText(droppedFolder.getAbsolutePath());
+        }
+        e.setDropCompleted(success);
+        e.consume();
+    }
+
 }
