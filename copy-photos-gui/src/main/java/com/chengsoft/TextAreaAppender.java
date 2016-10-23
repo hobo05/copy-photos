@@ -48,7 +48,7 @@ public class TextAreaAppender extends AbstractAppender {
     /**
      * Set the target TextArea for the logging information to appear.
      *
-     * @param textArea
+     * @param textArea the text area
      */
     public static void setTextArea(final TextArea textArea) {
         TextAreaAppender.textArea = textArea;
@@ -60,7 +60,7 @@ public class TextAreaAppender extends AbstractAppender {
         try {
             message = new String(getLayout().toByteArray(event), "utf-8");
         } catch (UnsupportedEncodingException e) {
-            throw new RuntimeException("Could not format logevent text:", e);
+            throw new RuntimeException("Could not format log event text:", e);
         }
 
         // Append formatted message to text area using the Thread.
@@ -81,7 +81,7 @@ public class TextAreaAppender extends AbstractAppender {
                 }
             });
         } catch (final IllegalStateException e) {
-            // ignore case when the platform hasn't yet been iniitialized
+            // ignore case when the platform hasn't yet been initialized
         }
     }
 }

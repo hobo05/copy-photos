@@ -19,8 +19,8 @@ import javafx.scene.input.Dragboard;
 import javafx.scene.input.TransferMode;
 import javafx.stage.DirectoryChooser;
 import javafx.stage.Stage;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.awt.*;
 import java.io.File;
@@ -39,7 +39,7 @@ import java.util.stream.Stream;
  * Created by Tim on 2/14/2016.
  */
 public class App extends Application implements Initializable {
-    private static final Logger logger = LogManager.getLogger(App.class);
+    private static final Logger logger = LoggerFactory.getLogger(App.class);
 
     @FXML
     private TextField textFieldSourceFolder;
@@ -122,7 +122,7 @@ public class App extends Application implements Initializable {
 
             try {
                 stage.getScene().setCursor(Cursor.WAIT);
-                PhotoProcessor.copyPhotos(textFieldSourceFolder.getText(), textFieldDestFolder.getText(), ignoreFolderList);
+                PhotoProcessor.copyPhotos(textFieldSourceFolder.getText(), textFieldDestFolder.getText(), ignoreFolderList, false);
 
                 stage.getScene().setCursor(Cursor.DEFAULT);
 
