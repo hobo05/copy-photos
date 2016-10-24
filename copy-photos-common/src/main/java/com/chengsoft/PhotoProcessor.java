@@ -8,6 +8,8 @@ import lombok.Data;
 import org.apache.commons.codec.digest.DigestUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import rx.Observable;
+import rx.functions.Func1;
 
 import javax.activation.MimetypesFileTypeMap;
 import java.io.IOException;
@@ -19,7 +21,6 @@ import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.List;
 import java.util.Optional;
-import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -32,31 +33,28 @@ class PhotoProcessor {
     private static final Logger log = LoggerFactory.getLogger(PhotoProcessor.class);
     private static final SimpleDateFormat FOLDER_DATE_FORMAT = new SimpleDateFormat("yyyy/yyyy_MM_dd");
 
-    static void copyPhotos(String inputFolder, String outputFolder, List<String> ignoreFolders, boolean dryRun) {
+    static Observable<Path> copyPhotos(String inputFolder, String outputFolder, List<String> ignoreFolders, boolean dryRun) {
         List<String> caseInsensitiveIgnoreFolders = ignoreFolders.stream()
                 .map(String::toLowerCase)
                 .collect(Collectors.toList());
 
-        Predicate<Path> filterOutIgnoredFolder = p -> caseInsensitiveIgnoreFolders.stream()
+        Func1<Path, Boolean> filterOutIgnoredFolder = p -> caseInsensitiveIgnoreFolders.stream()
                 .noneMatch(ignoreFolder -> p.toString().toLowerCase().contains(ignoreFolder));
 
-        try (Stream<Path> paths = Files.walk(Paths.get(inputFolder))) {
-
-            Long filesCopied = paths
-                    .filter(PhotoProcessor::filterByImages)
-                    .filter(filterOutIgnoredFolder)
-                    .map(p -> PhotoProcessor.createFileCopyBean(p, outputFolder))
-                    .flatMap(b -> PhotoProcessor.copyFile(b, dryRun))
-                    .collect(Collectors.counting());
-
-            String action = dryRun ? "Files to copy" : "Files copied";
-            log.info("{}: {}", action, filesCopied);
+        Stream<Path> pathStream;
+        try {
+            pathStream = Files.walk(Paths.get(inputFolder));
         } catch (IOException e) {
-            throw new RuntimeException("Failed to copy photos: ", e);
+            throw new RuntimeException(String.format("Error loading paths from inputFolder=%s with exception: ", inputFolder), e);
         }
+        return Observable.from(pathStream::iterator)
+                .filter(PhotoProcessor::filterByImages)
+                .filter(filterOutIgnoredFolder)
+                .map(p -> PhotoProcessor.createFileCopyBean(p, outputFolder))
+                .flatMap(b -> PhotoProcessor.copyFile(b, dryRun));
     }
 
-    private static Stream<Path> copyFile(FileCopyBean bean, boolean dryRun) {
+    private static Observable<Path> copyFile(FileCopyBean bean, boolean dryRun) {
         Path destFolderPath = bean.getDestinationFolder();
         Path destImagePath = bean.getDestinationPath();
         Path srcImagePath = bean.getSourcePath();
@@ -81,7 +79,7 @@ class PhotoProcessor {
                     log.warn("Destination file={} is corrupted. Overwriting file.", destImagePath.getFileName());
                 } else {
                     log.warn("Destination File={} already exists. Skipping.", destImagePath.getFileName());
-                    return Stream.empty();
+                    return Observable.empty();
                 }
             }
 
@@ -92,10 +90,10 @@ class PhotoProcessor {
             }
 
             log.info("{} [srcImage={}, destImagePath={}]", action, srcImagePath.getFileName(), destImagePath);
-            return Stream.of(destImagePath);
+            return Observable.just(destImagePath);
         } catch (IOException ex) {
             log.error("Error while copying [srcImage={}, destImagePath={}, exception={}]", srcImagePath.getFileName(), destImagePath, ex);
-            return Stream.empty();
+            return Observable.empty();
         }
     }
 
