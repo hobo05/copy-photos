@@ -20,6 +20,9 @@
         <guava.version>19.0</guava.version>
         <apache-poi.version>3.13</apache-poi.version>
         <metadata-extractor.version>2.9.1</metadata-extractor.version>
+        <commons-codec.version>1.10</commons-codec.version>
+        <rxjava.version>1.2.1</rxjava.version>
+        <tika-parsers.version>1.13</tika-parsers.version>
     </properties>
 
     <dependencies>
@@ -63,12 +66,17 @@
         <dependency>
             <groupId>commons-codec</groupId>
             <artifactId>commons-codec</artifactId>
-            <version>1.10</version>
+            <version>${commons-codec.version}</version>
         </dependency>
         <dependency>
             <groupId>io.reactivex</groupId>
             <artifactId>rxjava</artifactId>
-            <version>1.2.1</version>
+            <version>${rxjava.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.tika</groupId>
+            <artifactId>tika-parsers</artifactId>
+            <version>${tika-parsers.version}</version>
         </dependency>
         <dependency>
             <groupId>junit</groupId>

@@ -4,14 +4,34 @@
         <Console name="Console" target="SYSTEM_OUT">
             <PatternLayout pattern="%d{HH:mm:ss.SSS} [%t] %-5level %logger{36} - %msg%n"/>
         </Console>
+        <File name="errorLog" fileName="${sys:errorLogFilename}">
+            <PatternLayout pattern="%d{HH:mm:ss.SSS} [%t] %-5level %logger{36} - %msg%n"/>
+
+            <Filters>
+                <ThresholdFilter level="error"/>
+            </Filters>
+        </File>
         <TextArea name="TextArea">
             <PatternLayout pattern="%-5level - %msg%n"/>
+
+            <Filters>
+                <!-- First deny warn, error and fatal messages -->
+                <ThresholdFilter level="warn"  onMatch="DENY" onMismatch="NEUTRAL"/>
+                <ThresholdFilter level="error" onMatch="DENY" onMismatch="NEUTRAL"/>
+                <ThresholdFilter level="fatal" onMatch="DENY" onMismatch="NEUTRAL"/>
+
+                <!-- Then accept info, warn, error, fatal and deny debug/trace -->
+                <ThresholdFilter level="info"  onMatch="ACCEPT" onMismatch="DENY"/>
+            </Filters>
         </TextArea>
     </Appenders>
     <Loggers>
-        <Root level="info">
-            <AppenderRef ref="Console"/>
+        <Logger name="com.chengsoft" level="info">
             <AppenderRef ref="TextArea"/>
+        </Logger>
+        <Root level="info">
+            <AppenderRef ref="errorLog"/>
+            <AppenderRef ref="Console"/>
         </Root>
     </Loggers>
 </Configuration>

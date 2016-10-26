@@ -13,16 +13,26 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.springframework.shell.samples.hellworld.commands;
+package com.chengsoft.commands;
 
-import static org.junit.Assert.assertEquals;
-
+import com.google.common.collect.Lists;
+import org.junit.Ignore;
 import org.junit.Test;
 import org.springframework.shell.Bootstrap;
 import org.springframework.shell.core.CommandResult;
+import org.springframework.shell.core.Completion;
 import org.springframework.shell.core.JLineShellComponent;
 
-public class HelloWorldCommandTests {
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.List;
+
+import static org.junit.Assert.assertEquals;
+
+@Ignore
+public class PhotoCommandTests {
 
 	@Test
 	public void testSimple() {
@@ -33,5 +43,23 @@ public class HelloWorldCommandTests {
 		CommandResult cr = shell.executeCommand("hw simple --message hello");
 		assertEquals(true, cr.isSuccess());
 		assertEquals("Message = [hello] Location = [null]", cr.getResult());
+	}
+
+	@Test
+	public void test() throws Exception {
+		List<Completion> completions = Lists.newArrayList();
+		Path existingPath = Paths.get("/Users/tche");
+		Path parent = existingPath.getParent();
+		System.out.println("parent="+parent);
+		if (Files.exists(parent)) {
+			try {
+				Files.walk(parent, 1).forEach(p -> completions.add(new Completion(p.getFileName().toString())));
+			} catch (IOException e) {
+				throw new IllegalArgumentException("Could not get autocomplete values", e);
+			}
+		}
+
+		System.out.println(completions);
+
 	}
 }
