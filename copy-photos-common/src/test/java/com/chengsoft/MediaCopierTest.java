@@ -7,7 +7,6 @@ import org.apache.tika.exception.TikaException;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
-import org.apache.tika.mime.MediaType;
 import org.apache.tika.parser.AutoDetectParser;
 import org.apache.tika.sax.BodyContentHandler;
 import org.junit.Ignore;
@@ -22,19 +21,20 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.text.DateFormat;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
+import java.util.Date;
 import java.util.List;
+import java.util.Optional;
 import java.util.stream.Stream;
-
-import static com.chengsoft.PhotoProcessor.*;
 
 /**
  * Created by tcheng on 4/2/16.
  */
 @Ignore
 @Slf4j
-public class PhotoProcessorTest {
+public class MediaCopierTest {
 
     @Test
     public void testCopyPhotos() throws IOException {
@@ -47,44 +47,60 @@ public class PhotoProcessorTest {
 //        String inputFolder = "/Volumes/NTFS/DCIM";
 //        String outputFolder = "/Volumes/NTFS/output";
 
-        copyFiles(inputFolder, outputFolder, ignoreFolders, Media.VIDEO, false)
+        MediaCopier mediaCopier = MediaCopier.builder()
+                .inputFolder(inputFolder)
+                .outputFolder(outputFolder)
+                .ignoreFolders(ignoreFolders)
+                .media(Media.IMAGE)
+                .build();
+
+        mediaCopier.copyFiles(false)
                 .count()
                 .subscribe(c -> log.info("Files Copied: {}", c));
     }
 
     @Test
-    public void testCopyVideos() throws IOException, TikaException, SAXException, ParseException {
+    public void testDetectMetadata() throws IOException, TikaException, SAXException, ParseException {
 
 //        List<String> ignoreFolders = ImmutableList.of("Thumbs");
 //
-//        String inputFolder = "/Users/tcheng/phototest/input";
+        String inputFolder = "/Users/tcheng/phototest/input";
 //        String outputFolder = "/Users/tcheng/phototest/output";
 //
-//        PhotoProcessor.copyPhotos(inputFolder, outputFolder, ignoreFolders, false)
+//        MediaCopier.copyPhotos(inputFolder, outputFolder, ignoreFolders, false)
 //                .count()
 //                .subscribe(c -> log.info("Files Copied: {}", c));
 
-        SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'");
+        SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss");
 
-        Path videoPath = Paths.get("/Users/tcheng/phototest/input/VID_20160915_115528661.mp4");
-        AutoDetectParser parser = new AutoDetectParser();
-        BodyContentHandler handler = new BodyContentHandler();
-        Metadata metadata = new Metadata();
-        try (InputStream stream = Files.newInputStream(videoPath)) {
-            parser.parse(stream, handler, metadata);
-            log.info(handler.toString());
-            log.info(metadata.toString());
-            String dateString = metadata.get(TikaCoreProperties.CREATED);
-            log.info("Creation Date={}", dateFormat.parse(dateString));
-//            log.info("Type={}", metadata.get(TikaCoreProperties.TYPE));
-            log.info("Type={}", metadata.get(Metadata.CONTENT_TYPE));
-            log.info("Java Files type={}", Files.probeContentType(videoPath));
-            String mimetype = new MimetypesFileTypeMap().getContentType(videoPath.toFile());
-            log.info("Mimetype: {}", mimetype);
+//        Path videoPath = Paths.get("/Users/tcheng/phototest/input/VID_20160915_115528661.mp4");
 
-            TikaConfig tika = new TikaConfig();
-            MediaType mediaType = tika.getDetector().detect(TikaInputStream.get(videoPath), new Metadata());
-            log.info("Tika mediatype: {}", mediaType.getType());
+        try (Stream<Path> pathStream = Files.walk(Paths.get(inputFolder))) {
+            pathStream
+                    .filter(Files::isRegularFile)
+                    .forEach(videoPath -> {
+                AutoDetectParser parser = new AutoDetectParser();
+                BodyContentHandler handler = new BodyContentHandler();
+                Metadata metadata = new Metadata();
+                try (InputStream stream = Files.newInputStream(videoPath)) {
+                    parser.parse(stream, handler, metadata);
+                    log.info(handler.toString());
+                    log.info("Metadata={}", metadata.toString());
+                    Optional.ofNullable(metadata.get(TikaCoreProperties.CREATED))
+                            .ifPresent(dateString -> log.info("Creation Date={}", uncheckedParse(dateFormat, dateString)));
+                    log.info("Type={}", metadata.get(Metadata.CONTENT_TYPE));
+                } catch (Exception ex) {
+                    ex.printStackTrace();
+                }
+            });
+        }
+    }
+
+    private Date uncheckedParse(DateFormat dateFormat, String string) {
+        try {
+            return dateFormat.parse(string);
+        } catch (ParseException e) {
+            throw new RuntimeException(e);
         }
     }
 

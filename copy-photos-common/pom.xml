@@ -19,7 +19,6 @@
         <lombok.version>1.16.10</lombok.version>
         <guava.version>19.0</guava.version>
         <apache-poi.version>3.13</apache-poi.version>
-        <metadata-extractor.version>2.9.1</metadata-extractor.version>
         <commons-codec.version>1.10</commons-codec.version>
         <rxjava.version>1.2.1</rxjava.version>
         <tika-parsers.version>1.13</tika-parsers.version>
@@ -57,11 +56,6 @@
             <groupId>org.apache.poi</groupId>
             <artifactId>poi-ooxml</artifactId>
             <version>${apache-poi.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>com.drewnoakes</groupId>
-            <artifactId>metadata-extractor</artifactId>
-            <version>${metadata-extractor.version}</version>
         </dependency>
         <dependency>
             <groupId>commons-codec</groupId>

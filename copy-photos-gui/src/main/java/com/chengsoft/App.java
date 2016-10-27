@@ -40,8 +40,6 @@ import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import static com.chengsoft.PhotoProcessor.*;
-
 /**
  * Created by Tim on 2/14/2016.
  */
@@ -136,14 +134,19 @@ public class App extends Application implements Initializable {
 
             stage.getScene().setCursor(Cursor.WAIT);
 
-            Integer dryRunCount = copyFiles(textFieldSourceFolder.getText(),
-                    textFieldDestFolder.getText(), ignoreFolderList, Media.ALL, true)
+            MediaCopier mediaCopier = MediaCopier.builder()
+                    .inputFolder(textFieldSourceFolder.getText())
+                    .outputFolder(textFieldDestFolder.getText())
+                    .ignoreFolders(ignoreFolderList)
+                    .media(Media.ALL)
+                    .build();
+
+            Integer dryRunCount = mediaCopier.copyFiles(true)
                     .count()
                     .toBlocking()
                     .single();
 
-            copyFiles(textFieldSourceFolder.getText(),
-                    textFieldDestFolder.getText(), ignoreFolderList, Media.ALL, false)
+            mediaCopier.copyFiles(false)
                     .count()
                     .doAfterTerminate(() -> {
                         stage.getScene().setCursor(Cursor.DEFAULT);

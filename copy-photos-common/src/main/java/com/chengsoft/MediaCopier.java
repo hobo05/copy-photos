@@ -1,13 +1,13 @@
 package com.chengsoft;
 
-import com.drew.imaging.ImageMetadataReader;
-import com.drew.metadata.Metadata;
-import com.drew.metadata.exif.ExifSubIFDDirectory;
+import com.google.common.collect.ImmutableList;
 import lombok.Builder;
 import lombok.Data;
+import lombok.NonNull;
 import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.tika.config.TikaConfig;
 import org.apache.tika.io.TikaInputStream;
+import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.parser.AutoDetectParser;
 import org.apache.tika.sax.BodyContentHandler;
@@ -23,6 +23,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
+import java.text.DateFormat;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.Date;
@@ -31,44 +32,31 @@ import java.util.Optional;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import static java.util.Objects.isNull;
+import static java.util.Objects.nonNull;
+
 /**
  * Created by Tim on 8/8/2016.
  *
- * @author Tim
+ * @author tcheng
  */
-public class PhotoProcessor {
-    private static final Logger log = LoggerFactory.getLogger(PhotoProcessor.class);
+@Data
+@Builder
+public class MediaCopier {
+    private static final Logger log = LoggerFactory.getLogger(MediaCopier.class);
     private static final SimpleDateFormat FOLDER_DATE_FORMAT = new SimpleDateFormat("yyyy/yyyy_MM_dd");
-    private static final SimpleDateFormat TIKE_DATE_FORMAT = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'");
+    private static final SimpleDateFormat TIKA_DATE_FORMAT = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss");
 
-    public static enum Media {
-        IMAGE("image"),
-        VIDEO("video"),
-        ALL("all");
+    private @NonNull String inputFolder;
+    private @NonNull String outputFolder;
+    private @NonNull Media media;
+    private List<String> ignoreFolders = ImmutableList.of();
 
-        private String value;
+    private TikaConfig tikaConfig;
 
-        Media(String value) {
-            this.value = value;
-        }
+    private Observable<Path> filteredPaths;
 
-        @Override
-        public String toString() {
-            return value;
-        }
-
-        public String getValue() {
-            return value;
-        }
-    }
-
-    public static Observable<Path> copyFiles(String inputFolder,
-                                             String outputFolder,
-                                             List<String> ignoreFolders,
-                                             Media media,
-                                             boolean dryRun) {
-
-
+    public Observable<Path> copyFiles(boolean dryRun) {
         // Choose which media type to filter by
         Func1<GroupedObservable<String, Path>, Boolean> filterByMediaType = go -> go.getKey().equals(media.getValue());
         if (Media.ALL == media) {
@@ -78,8 +66,8 @@ public class PhotoProcessor {
         return getPathsGroupedByMediaType(inputFolder, ignoreFolders)
                 .filter(filterByMediaType)
                 .flatMap(a -> a)// unwrap the observable
-                .map(p -> PhotoProcessor.createFileCopyBean(p, outputFolder, dryRun))
-                .flatMap(b -> PhotoProcessor.copySingleFile(b)
+                .map(p -> createFileCopyBean(p, outputFolder, dryRun))
+                .flatMap(b -> copySingleFile(b)
                         .onErrorResumeNext(throwable -> {
                             log.error("Failed to copy file", throwable);
                             return Observable.empty();
@@ -87,11 +75,17 @@ public class PhotoProcessor {
 
     }
 
-    private static Observable<GroupedObservable<String, Path>> getPathsGroupedByMediaType(String inputFolder, List<String> ignoreFolders) {
-        TikaConfig tika;
+    private Observable<GroupedObservable<String, Path>> getPathsGroupedByMediaType(String inputFolder, List<String> ignoreFolders) {
+        // Get the paths if it hasn't been retrieved during the dry run
+        if (isNull(filteredPaths)) {
+            filteredPaths = getFilteredPaths();
+        }
+        return filteredPaths.groupBy(this::getMediaType);
+    }
+
+    private Observable<Path> getFilteredPaths() {
         Stream<Path> pathStream;
         try {
-            tika = new TikaConfig();
             pathStream = Files.walk(Paths.get(inputFolder));
         } catch (Exception e) {
             throw new RuntimeException(String.format("Error loading paths from inputFolder=%s", inputFolder), e);
@@ -105,22 +99,29 @@ public class PhotoProcessor {
         Func1<Path, Boolean> filterOutIgnoredFolder = p -> caseInsensitiveIgnoreFolders.stream()
                 .noneMatch(ignoreFolder -> p.toString().toLowerCase().contains(ignoreFolder));
 
+
         return Observable.from(pathStream::iterator)
                 .filter(filterOutIgnoredFolder)
                 .filter(Files::isRegularFile)
-                .groupBy(p -> PhotoProcessor.getMediaType(tika, p))
-                .cache();
+                .cache(); // Make sure it's cached since streams are not reusable
     }
 
-    private static String getMediaType(TikaConfig tika, Path path) {
-        try {
-            return tika.getDetector().detect(TikaInputStream.get(path), new org.apache.tika.metadata.Metadata()).getType();
+    /**
+     * Detect the media type of the file and return it as a string
+     *
+     * @param path the file path
+     * @return the media type
+     */
+    private String getMediaType(Path path) {
+        // Close stream after detecting media type
+        try (TikaInputStream inputStream = TikaInputStream.get(path)) {
+            return getTikaConfig().getDetector().detect(inputStream, new Metadata()).getType();
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
     }
 
-    private static Observable<Path> copySingleFile(FileCopyBean bean) {
+    private Observable<Path> copySingleFile(FileCopyBean bean) {
         Path destFolderPath = bean.getDestinationFolder();
         Path destImagePath = bean.getDestinationPath();
         Path srcImagePath = bean.getSourcePath();
@@ -168,15 +169,12 @@ public class PhotoProcessor {
      *
      * @param path the source Path
      * @param outputFolder the output folder
-     * @param dryRun
+     * @param dryRun dry run
      * @return the {@link FileCopyBean}
      */
-    private static FileCopyBean createFileCopyBean(Path path, String outputFolder, boolean dryRun) {
-        // Try get the original photo date
-        Optional<Date> dateTaken = getPhotoDateTaken(path);
-        // Try to get the original video date
-        dateTaken = dateTaken.isPresent() ? dateTaken : getVideoDateTaken(path);
-
+    private FileCopyBean createFileCopyBean(Path path, String outputFolder, boolean dryRun) {
+        // Try get the original date
+        Optional<Date> dateTaken = getDateTaken(path);
 
         // Use the last modified date as a last resort
         Date lastModifiedDate = new Date(path.toFile().lastModified());
@@ -196,59 +194,57 @@ public class PhotoProcessor {
                 .build();
     }
 
-    @Data
-    @Builder
-    private static class FileCopyBean {
-        private Path sourcePath;
-        private Path destinationFolder;
-        private Path destinationPath;
-        private boolean dryRun;
-    }
-
-    private static Optional<Date> getVideoDateTaken(Path videoPath) {
+    /**
+     * Get the date taken of the media type by using Apache Tika to extract it
+     *
+     * @param path the file path of the media
+     * @return the optional date
+     */
+    private Optional<Date> getDateTaken(Path path) {
         AutoDetectParser parser = new AutoDetectParser();
         BodyContentHandler handler = new BodyContentHandler();
-        org.apache.tika.metadata.Metadata metadata = new org.apache.tika.metadata.Metadata();
-        try (InputStream stream = Files.newInputStream(videoPath)) {
+        Metadata metadata = new Metadata();
+        try (InputStream stream = Files.newInputStream(path)) {
             parser.parse(stream, handler, metadata);
-            return Optional.ofNullable(metadata.get(TikaCoreProperties.CREATED))
-                    .map(s -> {
-                        try {
-                            return TIKE_DATE_FORMAT.parse(s);
-                        } catch (ParseException e) {
-                            throw new RuntimeException(e);
-                        }
-                    });
+
+            // Find the created and original date
+            Optional<String> createdOptional = Optional.ofNullable(metadata.get(TikaCoreProperties.CREATED));
+            Optional<String> originalOptional = Optional.ofNullable(metadata.get(Metadata.ORIGINAL_DATE));
+
+            // Give precedence to the created date, then try the original one
+            return (createdOptional.isPresent() ? createdOptional : originalOptional)
+                    .map(s -> uncheckedParse(TIKA_DATE_FORMAT, s));  // Parse to date object
         } catch (Exception e) {
-            log.warn("[path={}, exception={}]", videoPath, e.getMessage());
+            log.warn("[path={}, exception={}]", path, e.getMessage());
             return Optional.empty();
         }
     }
 
     /**
-     * Bean that holds info to copy one file to a destination
+     * Unchecked version of {@link DateFormat#parse(String)}
+     *
+     * @param dateFormat the date format
+     * @param string the parseable string
+     * @return the {@link Date}
      */
-    private static Optional<Date> getPhotoDateTaken(Path srcImagePath) {
-        Optional<ExifSubIFDDirectory> directory = getExifSubIFDDirectory(srcImagePath);
-        return directory.map(d -> Optional.ofNullable(d.getDate(ExifSubIFDDirectory.TAG_DATETIME_ORIGINAL)))
-                .orElse(directory.flatMap(d -> Optional.ofNullable(d.getDate(ExifSubIFDDirectory.TAG_DATETIME))));
+    private Date uncheckedParse(DateFormat dateFormat, String string) {
+        try {
+            return dateFormat.parse(string);
+        } catch (ParseException e) {
+            throw new RuntimeException(e);
+        }
     }
 
-    /**
-     * Get the EXIF directory from the image path
-     *
-     * @param srcImagePath the image path
-     * @return the EXIF directory if any
-     */
-    private static Optional<ExifSubIFDDirectory> getExifSubIFDDirectory(Path srcImagePath) {
-        Optional<ExifSubIFDDirectory> directory = Optional.empty();
+    private TikaConfig getTikaConfig() {
+        if (nonNull(tikaConfig))
+            return tikaConfig;
+
         try {
-            Metadata metadata = ImageMetadataReader.readMetadata(srcImagePath.toFile());
-            // obtain the Exif directory
-            directory = Optional.ofNullable(metadata.getFirstDirectoryOfType(ExifSubIFDDirectory.class));
+            tikaConfig = new TikaConfig();
         } catch (Exception e) {
-            log.warn("[path={}, exception={}]", srcImagePath, e.getMessage());
+            throw new RuntimeException(e);
         }
-        return directory;
+        return tikaConfig;
+
     }
 }

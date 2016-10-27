@@ -1,6 +1,7 @@
 package com.chengsoft.commands;
 
-import com.chengsoft.PhotoProcessor;
+import com.chengsoft.Media;
+import com.chengsoft.MediaCopier;
 import com.google.common.collect.ImmutableList;
 import org.springframework.shell.core.CommandMarker;
 import org.springframework.shell.core.annotation.CliCommand;
@@ -18,7 +19,7 @@ public class PhotoCommands implements CommandMarker {
     public String startCopy(
             @CliOption(key = {"src"}, mandatory = true, help = "The source folder") final Path source,
             @CliOption(key = {"dest"}, mandatory = true, help = "The destination folder") final Path dest,
-            @CliOption(key = {"type"}, unspecifiedDefaultValue = "ALL", help = "The file types to transfer") final PhotoProcessor.Media media,
+            @CliOption(key = {"type"}, unspecifiedDefaultValue = "ALL", help = "The file types to transfer") final Media media,
             @CliOption(key = {"ignoreFolders"}, help = "Folders to ignore") final String[] ignoreFolders
     ) throws InterruptedException {
 
@@ -27,12 +28,14 @@ public class PhotoCommands implements CommandMarker {
         if (Objects.nonNull(ignoreFolders))
             ignoreFoldersList = ImmutableList.copyOf(ignoreFolders);
 
-        Integer dryRunCount = PhotoProcessor.copyFiles(
-                source.toString(),
-                dest.toString(),
-                ignoreFoldersList,
-                media,
-                true)
+        MediaCopier mediaCopier = MediaCopier.builder()
+                .inputFolder(source.toString())
+                .outputFolder(dest.toString())
+                .ignoreFolders(ignoreFoldersList)
+                .media(media)
+                .build();
+
+        Integer dryRunCount = mediaCopier.copyFiles(true)
                 .count()
                 .toBlocking()
                 .single();
@@ -41,12 +44,7 @@ public class PhotoCommands implements CommandMarker {
             return "Dry run count is 0. No files will be copied";
         }
 
-        Integer actualCount = PhotoProcessor.copyFiles(
-                source.toString(),
-                dest.toString(),
-                ignoreFoldersList,
-                media,
-                false)
+        Integer actualCount = mediaCopier.copyFiles(false)
                 .count()
                 .toBlocking()
                 .single();
