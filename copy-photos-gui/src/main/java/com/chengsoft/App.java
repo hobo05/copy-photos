@@ -134,19 +134,18 @@ public class App extends Application implements Initializable {
 
             stage.getScene().setCursor(Cursor.WAIT);
 
-            MediaCopier mediaCopier = MediaCopier.builder()
-                    .inputFolder(textFieldSourceFolder.getText())
-                    .outputFolder(textFieldDestFolder.getText())
-                    .ignoreFolders(ignoreFolderList)
-                    .media(Media.ALL)
-                    .build();
+            MediaCopier mediaCopier = new MediaCopier(
+                    textFieldSourceFolder.getText(),
+                    textFieldDestFolder.getText(),
+                    Media.ALL,
+                    ignoreFolderList);
 
-            Integer dryRunCount = mediaCopier.copyFiles(true)
+            Integer dryRunCount = mediaCopier.transferFiles(com.chengsoft.TransferMode.COPY, true)
                     .count()
                     .toBlocking()
                     .single();
 
-            mediaCopier.copyFiles(false)
+            mediaCopier.transferFiles(com.chengsoft.TransferMode.COPY, false)
                     .count()
                     .doAfterTerminate(() -> {
                         stage.getScene().setCursor(Cursor.DEFAULT);

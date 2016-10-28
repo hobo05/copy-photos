@@ -1,8 +1,11 @@
 package com.chengsoft;
 
+import com.google.common.base.Stopwatch;
+import com.google.common.cache.CacheBuilder;
+import com.google.common.cache.CacheLoader;
+import com.google.common.cache.LoadingCache;
 import com.google.common.collect.ImmutableList;
-import lombok.Builder;
-import lombok.Data;
+import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import lombok.NonNull;
 import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.tika.config.TikaConfig;
@@ -26,22 +29,24 @@ import java.nio.file.StandardCopyOption;
 import java.text.DateFormat;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
+import java.util.AbstractMap;
 import java.util.Date;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import static java.util.Objects.isNull;
-import static java.util.Objects.nonNull;
 
 /**
  * Created by Tim on 8/8/2016.
  *
  * @author tcheng
  */
-@Data
-@Builder
+//@Data
 public class MediaCopier {
     private static final Logger log = LoggerFactory.getLogger(MediaCopier.class);
     private static final SimpleDateFormat FOLDER_DATE_FORMAT = new SimpleDateFormat("yyyy/yyyy_MM_dd");
@@ -52,22 +57,57 @@ public class MediaCopier {
     private @NonNull Media media;
     private List<String> ignoreFolders = ImmutableList.of();
 
-    private TikaConfig tikaConfig;
+    private TikaConfig tikaConfig = initTika();
+    private AutoDetectParser autoDetectParser = new AutoDetectParser(tikaConfig);
 
     private Observable<Path> filteredPaths;
 
-    public Observable<Path> copyFiles(boolean dryRun) {
+    private ExecutorService pool = Executors.newFixedThreadPool(10, new ThreadFactoryBuilder()
+            .setNameFormat("Fixed Pool-%d")
+            .build());
+
+    private LoadingCache<Path, String> mediaTypeCache = CacheBuilder.newBuilder()
+            .build(
+                    new CacheLoader<Path, String>() {
+                        @Override
+                        public String load(Path key) throws Exception {
+                            log.info("Save media type to cache path={}", key);
+                            return getMediaType(key);
+                        }
+                    }
+            );
+
+    private LoadingCache<Path, FileCopyBean> beanCache = CacheBuilder.newBuilder()
+            .build(
+                    new CacheLoader<Path, FileCopyBean>() {
+                        @Override
+                        public FileCopyBean load(Path key) throws Exception {
+                            log.info("Save FileCopyBean to cache path={}", key);
+                            return createFileCopyBean(key, outputFolder);
+                        }
+                    }
+            );
+
+    public MediaCopier(String inputFolder, String outputFolder, Media media, List<String> ignoreFolders) {
+        this.inputFolder = inputFolder;
+        this.outputFolder = outputFolder;
+        this.media = media;
+        this.ignoreFolders = ignoreFolders;
+    }
+
+    public Observable<Path> transferFiles(TransferMode transferMode, boolean dryRun) {
+
         // Choose which media type to filter by
         Func1<GroupedObservable<String, Path>, Boolean> filterByMediaType = go -> go.getKey().equals(media.getValue());
         if (Media.ALL == media) {
             filterByMediaType = p -> true;
         }
 
-        return getPathsGroupedByMediaType(inputFolder, ignoreFolders)
+        return getPathsGroupedByMediaType()
                 .filter(filterByMediaType)
                 .flatMap(a -> a)// unwrap the observable
-                .map(p -> createFileCopyBean(p, outputFolder, dryRun))
-                .flatMap(b -> copySingleFile(b)
+                .flatMap(p -> Observable.from(pool.submit(() -> beanCache.get(p))))
+                .flatMap(b -> transferSingleFile(b, transferMode, dryRun)
                         .onErrorResumeNext(throwable -> {
                             log.error("Failed to copy file", throwable);
                             return Observable.empty();
@@ -75,12 +115,16 @@ public class MediaCopier {
 
     }
 
-    private Observable<GroupedObservable<String, Path>> getPathsGroupedByMediaType(String inputFolder, List<String> ignoreFolders) {
+    private Observable<GroupedObservable<String, Path>> getPathsGroupedByMediaType() {
         // Get the paths if it hasn't been retrieved during the dry run
         if (isNull(filteredPaths)) {
             filteredPaths = getFilteredPaths();
         }
-        return filteredPaths.groupBy(this::getMediaType);
+        return filteredPaths.
+                // Hack to retrieve the media type in an async way
+                        flatMap(p -> Observable.from(pool.submit(
+                        () -> new AbstractMap.SimpleEntry<>(mediaTypeCache.get(p), p))))
+                .groupBy(AbstractMap.SimpleEntry::getKey, AbstractMap.SimpleEntry::getValue);
     }
 
     private Observable<Path> getFilteredPaths() {
@@ -103,6 +147,13 @@ public class MediaCopier {
         return Observable.from(pathStream::iterator)
                 .filter(filterOutIgnoredFolder)
                 .filter(Files::isRegularFile)
+                .filter(p -> {
+                    try {
+                        return !Files.isHidden(p);
+                    } catch (IOException e) {
+                        throw new RuntimeException(e);
+                    }
+                })
                 .cache(); // Make sure it's cached since streams are not reusable
     }
 
@@ -114,21 +165,25 @@ public class MediaCopier {
      */
     private String getMediaType(Path path) {
         // Close stream after detecting media type
+        Stopwatch stopWatch = Stopwatch.createStarted();
         try (TikaInputStream inputStream = TikaInputStream.get(path)) {
-            return getTikaConfig().getDetector().detect(inputStream, new Metadata()).getType();
+            return tikaConfig.getDetector().detect(inputStream, new Metadata()).getType();
         } catch (Exception e) {
             throw new RuntimeException(e);
+        } finally {
+            stopWatch.stop();
+            log.info("Took time={} to get media type of {}", stopWatch.toString(), path.getFileName());
         }
     }
 
-    private Observable<Path> copySingleFile(FileCopyBean bean) {
+    private Observable<Path> transferSingleFile(FileCopyBean bean, TransferMode transferMode, boolean dryRun) {
         Path destFolderPath = bean.getDestinationFolder();
         Path destImagePath = bean.getDestinationPath();
         Path srcImagePath = bean.getSourcePath();
 
         try {
             // Create directory if necessary
-            if (!bean.isDryRun() && Files.notExists(destFolderPath)) {
+            if (!dryRun && Files.notExists(destFolderPath)) {
                 Files.createDirectories(destFolderPath);
                 log.info("Directory={} not found. Creating automatically.", destFolderPath);
             }
@@ -139,8 +194,11 @@ public class MediaCopier {
 
                 // Check that the source and destination file checksum match
                 // If not, delete the destination file
+                Stopwatch stopWatch = Stopwatch.createStarted();
                 String srcChecksum = DigestUtils.md5Hex(Files.readAllBytes(srcImagePath));
                 String destChecksum = DigestUtils.md5Hex(Files.readAllBytes(destImagePath));
+                stopWatch.stop();
+                log.info("Took time={} to get checksum of {}", stopWatch.toString(), srcImagePath.getFileName());
                 if (!srcChecksum.equals(destChecksum)) {
                     Files.delete(destImagePath);
                     log.warn("Destination file={} is corrupted. Overwriting file.", destImagePath.getFileName());
@@ -150,13 +208,29 @@ public class MediaCopier {
                 }
             }
 
-            String action = "Simulated Copy";
-            if (!bean.isDryRun()) {
-                action = "Copied";
-                Files.copy(srcImagePath, destImagePath, StandardCopyOption.COPY_ATTRIBUTES);
+            // Decide which transfer mode to use
+            Callable<Path> transferCallable;
+            switch (transferMode) {
+                case COPY:
+                    transferCallable = () ->
+                            Files.copy(srcImagePath, destImagePath, StandardCopyOption.COPY_ATTRIBUTES);
+                    break;
+                case MOVE:
+                    transferCallable = () ->
+                            Files.move(srcImagePath, destImagePath, StandardCopyOption.ATOMIC_MOVE);
+                    break;
+                default:
+                    return Observable.error(new RuntimeException("Did not recognize transferMode=%s"+transferMode));
             }
 
-            log.info("{} [srcImage={}, destImagePath={}]", action, srcImagePath.getFileName(), destImagePath);
+            String action = transferMode.toString();
+            if (!dryRun) {
+                return Observable.from(pool.submit(transferCallable))
+                        .doOnCompleted(() -> log.info("{} [srcImage={}, destImagePath={}]", action, srcImagePath.getFileName(), destImagePath));
+            } else {
+                log.info("Simulated {} [srcImage={}, destImagePath={}]", action, srcImagePath.getFileName(), destImagePath);
+            }
+
             return Observable.just(destImagePath);
         } catch (IOException ex) {
             return Observable.error(new RuntimeException(
@@ -167,12 +241,11 @@ public class MediaCopier {
     /**
      * Create the {@link FileCopyBean} by pulling the EXIF data and creating the destination path and folder
      *
-     * @param path the source Path
+     * @param path         the source Path
      * @param outputFolder the output folder
-     * @param dryRun dry run
      * @return the {@link FileCopyBean}
      */
-    private FileCopyBean createFileCopyBean(Path path, String outputFolder, boolean dryRun) {
+    private FileCopyBean createFileCopyBean(Path path, String outputFolder) {
         // Try get the original date
         Optional<Date> dateTaken = getDateTaken(path);
 
@@ -190,7 +263,6 @@ public class MediaCopier {
                 .sourcePath(path)
                 .destinationFolder(destFolderPath)
                 .destinationPath(destImagePath)
-                .dryRun(dryRun)
                 .build();
     }
 
@@ -201,11 +273,13 @@ public class MediaCopier {
      * @return the optional date
      */
     private Optional<Date> getDateTaken(Path path) {
-        AutoDetectParser parser = new AutoDetectParser();
         BodyContentHandler handler = new BodyContentHandler();
         Metadata metadata = new Metadata();
         try (InputStream stream = Files.newInputStream(path)) {
-            parser.parse(stream, handler, metadata);
+            Stopwatch stopWatch = Stopwatch.createStarted();
+            autoDetectParser.parse(stream, handler, metadata);
+            stopWatch.stop();
+            log.info("Took time={} to get date taken of {}", stopWatch.toString(), path.getFileName());
 
             // Find the created and original date
             Optional<String> createdOptional = Optional.ofNullable(metadata.get(TikaCoreProperties.CREATED));
@@ -224,7 +298,7 @@ public class MediaCopier {
      * Unchecked version of {@link DateFormat#parse(String)}
      *
      * @param dateFormat the date format
-     * @param string the parseable string
+     * @param string     the parseable string
      * @return the {@link Date}
      */
     private Date uncheckedParse(DateFormat dateFormat, String string) {
@@ -235,16 +309,11 @@ public class MediaCopier {
         }
     }
 
-    private TikaConfig getTikaConfig() {
-        if (nonNull(tikaConfig))
-            return tikaConfig;
-
+    private static TikaConfig initTika() {
         try {
-            tikaConfig = new TikaConfig();
+            return new TikaConfig();
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
-        return tikaConfig;
-
     }
 }

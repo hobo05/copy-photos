@@ -47,14 +47,16 @@ public class MediaCopierTest {
 //        String inputFolder = "/Volumes/NTFS/DCIM";
 //        String outputFolder = "/Volumes/NTFS/output";
 
-        MediaCopier mediaCopier = MediaCopier.builder()
-                .inputFolder(inputFolder)
-                .outputFolder(outputFolder)
-                .ignoreFolders(ignoreFolders)
-                .media(Media.IMAGE)
-                .build();
+        MediaCopier mediaCopier = new MediaCopier(
+                inputFolder,
+                outputFolder,
+                Media.IMAGE,
+                ignoreFolders);
+        mediaCopier.transferFiles(TransferMode.COPY, true)
+                .count()
+                .subscribe(c -> log.info("Files to copy: {}", c));
 
-        mediaCopier.copyFiles(false)
+        mediaCopier.transferFiles(TransferMode.COPY, false)
                 .count()
                 .subscribe(c -> log.info("Files Copied: {}", c));
     }

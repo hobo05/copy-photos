@@ -16,5 +16,4 @@ public class FileCopyBean {
     private Path sourcePath;
     private Path destinationFolder;
     private Path destinationPath;
-    private boolean dryRun;
 }
