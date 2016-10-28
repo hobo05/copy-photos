@@ -88,6 +88,16 @@ public class MediaCopier {
                     }
             );
 
+    private LoadingCache<ChecksumKey, Boolean> checksumCache = CacheBuilder.newBuilder()
+            .build(
+                    new CacheLoader<ChecksumKey, Boolean>() {
+                        @Override
+                        public Boolean load(ChecksumKey key) throws Exception {
+                            return checksumMatches(key.getSource(), key.getDestination());
+                        }
+                    }
+            );
+
     public MediaCopier(String inputFolder, String outputFolder, Media media, List<String> ignoreFolders) {
         this.inputFolder = inputFolder;
         this.outputFolder = outputFolder;
@@ -194,12 +204,11 @@ public class MediaCopier {
 
                 // Check that the source and destination file checksum match
                 // If not, delete the destination file
-                Stopwatch stopWatch = Stopwatch.createStarted();
-                String srcChecksum = DigestUtils.md5Hex(Files.readAllBytes(srcImagePath));
-                String destChecksum = DigestUtils.md5Hex(Files.readAllBytes(destImagePath));
-                stopWatch.stop();
-                log.info("Took time={} to get checksum of {}", stopWatch.toString(), srcImagePath.getFileName());
-                if (!srcChecksum.equals(destChecksum)) {
+                Boolean checksumMatches = checksumCache.get(ChecksumKey.builder()
+                        .source(srcImagePath)
+                        .destination(destImagePath)
+                        .build());
+                if (!checksumMatches) {
                     Files.delete(destImagePath);
                     log.warn("Destination file={} is corrupted. Overwriting file.", destImagePath.getFileName());
                 } else {
@@ -232,10 +241,26 @@ public class MediaCopier {
             }
 
             return Observable.just(destImagePath);
-        } catch (IOException ex) {
+        } catch (Exception ex) {
             return Observable.error(new RuntimeException(
                     String.format("Error while copying [srcImage=%s, destImagePath=%s]", srcImagePath.getFileName(), destImagePath), ex));
         }
+    }
+
+    /**
+     * Calculates the MD5 checksum of each file and compares them
+     * @param source the source
+     * @param destination the destination
+     * @return checksum matches
+     * @throws IOException IO exception
+     */
+    private boolean checksumMatches(Path source, Path destination) throws IOException {
+        Stopwatch stopWatch = Stopwatch.createStarted();
+        String srcChecksum = DigestUtils.md5Hex(Files.readAllBytes(source));
+        String destChecksum = DigestUtils.md5Hex(Files.readAllBytes(destination));
+        stopWatch.stop();
+        log.info("Took time={} to get checksum of {}", stopWatch.toString(), source.getFileName());
+        return srcChecksum.equals(destChecksum);
     }
 
     /**
