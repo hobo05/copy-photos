@@ -1,19 +1,29 @@
 package com.chengsoft
 
+import com.chengsoft.MediaCopier.TIKA_DATE_FORMAT
+import org.apache.tika.metadata.Metadata
+import org.apache.tika.metadata.TikaCoreProperties
+import org.apache.tika.parser.AutoDetectParser
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.catchThrowable
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
-import org.mockito.BDDMockito.willReturn
+import org.mockito.BDDMockito.*
+import org.mockito.Mockito.mock
 import org.mockito.Mockito.spy
+import org.xml.sax.ContentHandler
 import rx.Observable
 import java.io.File
 import java.io.IOException
+import java.io.InputStream
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
+import java.util.*
 import java.util.concurrent.CountDownLatch
+import java.util.stream.Collectors
+
 
 class MediaCopierTest {
 
@@ -194,5 +204,174 @@ class MediaCopierTest {
         assertThat(groupedPaths).isEqualTo(mapOf(
                 "image" to listOf(Paths.get("jpeg"), Paths.get("png")),
                 "video" to listOf(Paths.get("avi"))))
+    }
+
+    @Test
+    fun copy_single_file() {
+        // given
+        val sourcePhoto = createPhoto()
+        val mediaCopier = MediaCopier(inputFolder.absolutePath, outputFolder.absolutePath, Media.IMAGE, emptyList())
+        val destinationPath = outputFolder.toPath().resolve(sourcePhoto.fileName)
+        val copyBean = FileCopyBean(sourcePhoto, outputFolder.toPath(), destinationPath)
+
+        // when
+        val copiedPhotos = mediaCopier.transferSingleFile(copyBean, TransferMode.COPY, false).toList().toBlocking().single()
+
+        // then
+        assertThat(sourcePhoto).exists()
+        val outputFolderFiles = Files.walk(outputFolder.toPath()).map { it.fileName.toString() }.collect(Collectors.toList())
+        assertThat(copiedPhotos).hasSize(1)
+        assertThat(copiedPhotos.first()).`as`("copied file should be one of outputFolderFiles=$outputFolderFiles")
+                .isRegularFile()
+                .exists()
+
+    }
+
+    @Test
+    fun move_single_file() {
+        // given
+        val sourcePhoto = createPhoto()
+        val mediaCopier = MediaCopier(inputFolder.absolutePath, outputFolder.absolutePath, Media.IMAGE, emptyList())
+        val destinationPath = outputFolder.toPath().resolve(sourcePhoto.fileName)
+        val copyBean = FileCopyBean(sourcePhoto, outputFolder.toPath(), destinationPath)
+
+        // when
+        val movedPhotos = mediaCopier.transferSingleFile(copyBean, TransferMode.MOVE, false).toList().toBlocking().single()
+
+        // then
+        assertThat(sourcePhoto).doesNotExist()
+        val outputFolderFiles = Files.walk(outputFolder.toPath()).map { it.fileName.toString() }.collect(Collectors.toList())
+        assertThat(movedPhotos).hasSize(1)
+        assertThat(movedPhotos.first()).`as`("moved file should be one of outputFolderFiles=$outputFolderFiles")
+                .isRegularFile()
+                .exists()
+
+    }
+
+    @Test
+    fun transfer_file_to_nonexistent_folder_creates_it() {
+        // given
+        val sourcePhoto = createPhoto()
+        val mediaCopier = MediaCopier(inputFolder.absolutePath, outputFolder.absolutePath, Media.IMAGE, emptyList())
+        val nonexistentFolder = outputFolder.toPath().resolve("new")
+        val destinationPath = nonexistentFolder.resolve(sourcePhoto.fileName)
+        val copyBean = FileCopyBean(sourcePhoto, nonexistentFolder, destinationPath)
+
+        // when
+        val copiedPhoto = mediaCopier.transferSingleFile(copyBean, TransferMode.COPY, false).toBlocking().single()
+
+        // then
+        assertThat(copiedPhoto).exists()
+
+    }
+
+    @Test
+    fun transfer_file_does_not_overwrite_same_file() {
+        // given
+        val sourcePhoto = createPhoto()
+        val mediaCopier = MediaCopier(inputFolder.absolutePath, outputFolder.absolutePath, Media.IMAGE, emptyList())
+        val destinationFolder = outputFolder.toPath()
+        val destinationPath = destinationFolder.resolve(sourcePhoto.fileName)
+        val copyBean = FileCopyBean(sourcePhoto, destinationFolder, destinationPath)
+
+        Files.copy(sourcePhoto, destinationPath)
+
+        // when
+        val copiedPhoto = mediaCopier.transferSingleFile(copyBean, TransferMode.COPY, false).toBlocking().singleOrDefault(null)
+
+        // then
+        assertThat(copiedPhoto).isNull()
+
+    }
+
+    @Test
+    fun transfer_file_does_overwrites_different_file() {
+        // given
+        val sourcePhoto = createPhoto()
+        val mediaCopier = MediaCopier(inputFolder.absolutePath, outputFolder.absolutePath, Media.IMAGE, emptyList())
+        val destinationFolder = outputFolder.toPath()
+        val destinationPath = destinationFolder.resolve(sourcePhoto.fileName)
+        val copyBean = FileCopyBean(sourcePhoto, destinationFolder, destinationPath)
+
+        val fileWithDifferentContent = Files.createFile(destinationPath)
+        fileWithDifferentContent.toFile().writeText("different file")
+
+        // when
+        val copiedPhoto = mediaCopier.transferSingleFile(copyBean, TransferMode.COPY, false).toBlocking().singleOrDefault(null)
+
+        // then
+        assertThat(copiedPhoto)
+                .isNotNull()
+                .isRegularFile()
+
+    }
+
+    @Test
+    fun return_empty_date() {
+        // given
+        val photo = createPhoto()
+        val mediaCopier = MediaCopier(inputFolder.absolutePath, outputFolder.absolutePath, Media.IMAGE, emptyList())
+        val autoDetectParser = mock(AutoDetectParser::class.java)
+
+        // when
+        val dateTaken = mediaCopier.getDateTaken(photo, autoDetectParser)
+
+        // then
+        assertThat(dateTaken).isNotPresent
+    }
+
+    @Test
+    fun createdDate_has_first_priority() {
+        // given
+        val photo = createPhoto()
+        val mediaCopier = MediaCopier(inputFolder.absolutePath, outputFolder.absolutePath, Media.IMAGE, emptyList())
+
+        val createdDate = Date()
+        val createdDateString = TIKA_DATE_FORMAT.format(createdDate)
+        val originalDate = Date(963068536)
+        val originalDateString = TIKA_DATE_FORMAT.format(originalDate)
+
+        val autoDetectParser = mock(AutoDetectParser::class.java)
+        given(autoDetectParser.parse(any(InputStream::class.java), any(ContentHandler::class.java), any(Metadata::class.java)))
+                .willAnswer {
+                    val (_,_,metadataObject) = it.arguments
+                    val metadata = metadataObject as Metadata
+                    metadata.add(TikaCoreProperties.CREATED, createdDateString)
+                    metadata.add(Metadata.ORIGINAL_DATE, originalDateString)
+                    Unit
+                }
+
+        // when
+        val dateTaken = mediaCopier.getDateTaken(photo, autoDetectParser)
+
+        // then
+        val parseDate = TIKA_DATE_FORMAT.parse(createdDateString)
+        assertThat(dateTaken).isPresent.hasValue(parseDate)
+    }
+
+    @Test
+    fun createdDate_has_second_priority() {
+        // given
+        val photo = createPhoto()
+        val mediaCopier = MediaCopier(inputFolder.absolutePath, outputFolder.absolutePath, Media.IMAGE, emptyList())
+
+        val originalDate = Date(963068536)
+        val originalDateString = TIKA_DATE_FORMAT.format(originalDate)
+
+        val autoDetectParser = mock(AutoDetectParser::class.java)
+        given(autoDetectParser.parse(any(InputStream::class.java), any(ContentHandler::class.java), any(Metadata::class.java)))
+                .willAnswer {
+                    val (_,_,metadataObject) = it.arguments
+                    val metadata = metadataObject as Metadata
+                    metadata.add(Metadata.ORIGINAL_DATE, originalDateString)
+                    Unit
+                }
+
+        // when
+        val dateTaken = mediaCopier.getDateTaken(photo, autoDetectParser)
+
+        // then
+        val parseDate = TIKA_DATE_FORMAT.parse(originalDateString)
+        assertThat(dateTaken).isPresent.hasValue(parseDate)
     }
 }

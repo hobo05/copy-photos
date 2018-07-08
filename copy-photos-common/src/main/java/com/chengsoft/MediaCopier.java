@@ -5,6 +5,8 @@ import com.google.common.cache.CacheBuilder;
 import com.google.common.cache.CacheLoader;
 import com.google.common.cache.LoadingCache;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
+import io.vavr.control.Option;
+import io.vavr.control.Try;
 import lombok.NonNull;
 import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.tika.config.TikaConfig;
@@ -13,6 +15,7 @@ import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.parser.AutoDetectParser;
 import org.apache.tika.sax.BodyContentHandler;
+import org.jetbrains.annotations.NotNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import rx.Observable;
@@ -25,15 +28,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
-import java.text.DateFormat;
-import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.AbstractMap;
 import java.util.Date;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.Callable;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.function.Function;
@@ -51,7 +51,7 @@ import static java.util.Objects.isNull;
 public class MediaCopier {
     private static final Logger log = LoggerFactory.getLogger(MediaCopier.class);
     private static final SimpleDateFormat FOLDER_DATE_FORMAT = new SimpleDateFormat("yyyy/yyyy_MM_dd");
-    private static final SimpleDateFormat TIKA_DATE_FORMAT = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss");
+    static final SimpleDateFormat TIKA_DATE_FORMAT = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss");
 
     private @NonNull String inputFolder;
     private @NonNull String outputFolder;
@@ -67,7 +67,7 @@ public class MediaCopier {
             .setNameFormat("Fixed Pool-%d")
             .build());
 
-    private Function<Path, String> mediaTypeCache;
+    private Function<Path, String> mediaTypeResolver;
 
     private LoadingCache<Path, FileCopyBean> beanCache = CacheBuilder.newBuilder()
             .build(
@@ -91,12 +91,12 @@ public class MediaCopier {
             );
 
     public MediaCopier(String inputFolder, String outputFolder, Media media, List<String> ignoreFolders,
-                       Function<Path, String> mediaTypeCache) {
+                       Function<Path, String> mediaTypeResolver) {
         this.inputFolder = inputFolder;
         this.outputFolder = outputFolder;
         this.media = media;
         this.ignoreFolders = ignoreFolders;
-        this.mediaTypeCache = mediaTypeCache;
+        this.mediaTypeResolver = mediaTypeResolver;
     }
 
     public MediaCopier(String inputFolder, String outputFolder, Media media, List<String> ignoreFolders) {
@@ -104,25 +104,34 @@ public class MediaCopier {
         this.outputFolder = outputFolder;
         this.media = media;
         this.ignoreFolders = ignoreFolders;
+        this.mediaTypeResolver = defaultMediaTypeResolver();
 
-        LoadingCache<Path, String> mediaTypeCacheBackingSource = CacheBuilder.newBuilder()
+    }
+
+    private Function<Path, String> defaultMediaTypeResolver() {
+        LoadingCache<Path, String> mediaTypeCache = CacheBuilder.newBuilder()
                 .build(
                         new CacheLoader<Path, String>() {
                             @Override
                             public String load(Path key) {
                                 log.info("Save media type to cache path={}", key);
-                                return getMediaType(key);
+                                // Close stream after detecting media type
+                                Stopwatch stopWatch = Stopwatch.createStarted();
+                                try (TikaInputStream inputStream = TikaInputStream.get(key)) {
+                                    return tikaConfig.getDetector().detect(inputStream, new Metadata()).getType();
+                                } catch (IOException e) {
+                                    throw new RuntimeException("Error getting media type of path=" + key, e);
+                                } finally {
+                                    stopWatch.stop();
+                                    log.info("Took time={} to get media type of {}", stopWatch.toString(), key.getFileName());
+                                }
                             }
                         }
                 );
 
-        this.mediaTypeCache = p -> {
-            try {
-                return mediaTypeCacheBackingSource.get(p);
-            } catch (ExecutionException e) {
-                throw new RuntimeException(e);
-            }
-        };
+        return path -> Try.of(() -> mediaTypeCache.get(path))
+                .onFailure(e -> log.warn("Failed to media type for path=" + path, e))
+                .getOrElse("");
     }
 
     public Observable<Path> transferFiles(TransferMode transferMode, boolean dryRun) {
@@ -153,7 +162,7 @@ public class MediaCopier {
         return filteredPaths.
                 // Hack to retrieve the media type in an async way
                         flatMap(p -> Observable.from(pool.submit(
-                        () -> new AbstractMap.SimpleEntry<>(mediaTypeCache.apply(p), p))))
+                        () -> new AbstractMap.SimpleEntry<>(mediaTypeResolver.apply(p), p))))
                 .groupBy(AbstractMap.SimpleEntry::getKey, AbstractMap.SimpleEntry::getValue);
     }
 
@@ -184,26 +193,7 @@ public class MediaCopier {
                 .cache(); // Make sure it's cached since streams are not reusable
     }
 
-    /**
-     * Detect the media type of the file and return it as a string
-     *
-     * @param path the file path
-     * @return the media type
-     */
-    private String getMediaType(Path path) {
-        // Close stream after detecting media type
-        Stopwatch stopWatch = Stopwatch.createStarted();
-        try (TikaInputStream inputStream = TikaInputStream.get(path)) {
-            return tikaConfig.getDetector().detect(inputStream, new Metadata()).getType();
-        } catch (IOException e) {
-            throw new RuntimeException("Error getting media type of path=" + path, e);
-        } finally {
-            stopWatch.stop();
-            log.info("Took time={} to get media type of {}", stopWatch.toString(), path.getFileName());
-        }
-    }
-
-    private Observable<Path> transferSingleFile(FileCopyBean bean, TransferMode transferMode, boolean dryRun) {
+    Observable<Path> transferSingleFile(FileCopyBean bean, TransferMode transferMode, boolean dryRun) {
         Path destFolderPath = bean.getDestinationFolder();
         Path destImagePath = bean.getDestinationPath();
         Path srcImagePath = bean.getSourcePath();
@@ -217,7 +207,7 @@ public class MediaCopier {
 
 
             // If the file exists
-            if (Files.exists(destImagePath)) {
+            if (Files.exists(destImagePath) && Files.isRegularFile(destImagePath)) {
 
                 // Check that the source and destination file checksum match
                 // If not, delete the destination file
@@ -246,7 +236,7 @@ public class MediaCopier {
                             Files.move(srcImagePath, destImagePath, StandardCopyOption.ATOMIC_MOVE);
                     break;
                 default:
-                    return Observable.error(new RuntimeException("Did not recognize transferMode=%s"+transferMode));
+                    return Observable.error(new RuntimeException("Did not recognize transferMode=%s" + transferMode));
             }
 
             String action = transferMode.toString();
@@ -266,7 +256,8 @@ public class MediaCopier {
 
     /**
      * Calculates the MD5 checksum of each file and compares them
-     * @param source the source
+     *
+     * @param source      the source
      * @param destination the destination
      * @return checksum matches
      * @throws IOException IO exception
@@ -289,7 +280,7 @@ public class MediaCopier {
      */
     private FileCopyBean createFileCopyBean(Path path, String outputFolder) {
         // Try get the original date
-        Optional<Date> dateTaken = getDateTaken(path);
+        Optional<Date> dateTaken = getDateTaken(path, autoDetectParser);
 
         // Use the last modified date as a last resort
         Date lastModifiedDate = new Date(path.toFile().lastModified());
@@ -311,10 +302,11 @@ public class MediaCopier {
     /**
      * Get the date taken of the media type by using Apache Tika to extract it
      *
-     * @param path the file path of the media
+     * @param path             the file path of the media
+     * @param autoDetectParser the parser
      * @return the optional date
      */
-    private Optional<Date> getDateTaken(Path path) {
+    Optional<Date> getDateTaken(Path path, AutoDetectParser autoDetectParser) {
         BodyContentHandler handler = new BodyContentHandler();
         Metadata metadata = new Metadata();
         try (InputStream stream = Files.newInputStream(path)) {
@@ -324,31 +316,23 @@ public class MediaCopier {
             log.info("Took time={} to get date taken of {}", stopWatch.toString(), path.getFileName());
 
             // Find the created and original date
-            Optional<String> createdOptional = Optional.ofNullable(metadata.get(TikaCoreProperties.CREATED));
-            Optional<String> originalOptional = Optional.ofNullable(metadata.get(Metadata.ORIGINAL_DATE));
+            final Option<Date> dateOption = Option.of(metadata.get(TikaCoreProperties.CREATED))
+                    .orElse(() -> Option.of(metadata.get(Metadata.ORIGINAL_DATE)))
+                    .flatMap(this::parseDate);
 
             // Give precedence to the created date, then try the original one
-            return (createdOptional.isPresent() ? createdOptional : originalOptional)
-                    .map(s -> uncheckedParse(TIKA_DATE_FORMAT, s));  // Parse to date object
+            return dateOption.toJavaOptional();
         } catch (Exception e) {
             log.warn("[path={}, exception={}]", path, e.getMessage());
             return Optional.empty();
         }
     }
 
-    /**
-     * Unchecked version of {@link DateFormat#parse(String)}
-     *
-     * @param dateFormat the date format
-     * @param string     the parseable string
-     * @return the {@link Date}
-     */
-    private Date uncheckedParse(DateFormat dateFormat, String string) {
-        try {
-            return dateFormat.parse(string);
-        } catch (ParseException e) {
-            throw new RuntimeException(e);
-        }
+    @NotNull
+    private Option<Date> parseDate(String dateString) {
+        return Try.of(() -> TIKA_DATE_FORMAT.parse(dateString))
+                .onFailure(e -> log.warn("Failed to parse date=" + dateString, e))
+                .toOption();
     }
 
     private static TikaConfig initTika() {
