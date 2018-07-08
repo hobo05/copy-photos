@@ -34,7 +34,7 @@ import java.util.stream.Stream;
  */
 @Ignore
 @Slf4j
-public class MediaCopierTest {
+public class ApiTest {
 
     @Test
     public void testCopyPhotos() throws IOException {

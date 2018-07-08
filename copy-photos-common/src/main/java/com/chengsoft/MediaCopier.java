@@ -4,7 +4,6 @@ import com.google.common.base.Stopwatch;
 import com.google.common.cache.CacheBuilder;
 import com.google.common.cache.CacheLoader;
 import com.google.common.cache.LoadingCache;
-import com.google.common.collect.ImmutableList;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import lombok.NonNull;
 import org.apache.commons.codec.digest.DigestUtils;
@@ -34,8 +33,10 @@ import java.util.Date;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -55,7 +56,7 @@ public class MediaCopier {
     private @NonNull String inputFolder;
     private @NonNull String outputFolder;
     private @NonNull Media media;
-    private List<String> ignoreFolders = ImmutableList.of();
+    private List<String> ignoreFolders;
 
     private TikaConfig tikaConfig = initTika();
     private AutoDetectParser autoDetectParser = new AutoDetectParser(tikaConfig);
@@ -66,16 +67,7 @@ public class MediaCopier {
             .setNameFormat("Fixed Pool-%d")
             .build());
 
-    private LoadingCache<Path, String> mediaTypeCache = CacheBuilder.newBuilder()
-            .build(
-                    new CacheLoader<Path, String>() {
-                        @Override
-                        public String load(Path key) throws Exception {
-                            log.info("Save media type to cache path={}", key);
-                            return getMediaType(key);
-                        }
-                    }
-            );
+    private Function<Path, String> mediaTypeCache;
 
     private LoadingCache<Path, FileCopyBean> beanCache = CacheBuilder.newBuilder()
             .build(
@@ -98,11 +90,39 @@ public class MediaCopier {
                     }
             );
 
+    public MediaCopier(String inputFolder, String outputFolder, Media media, List<String> ignoreFolders,
+                       Function<Path, String> mediaTypeCache) {
+        this.inputFolder = inputFolder;
+        this.outputFolder = outputFolder;
+        this.media = media;
+        this.ignoreFolders = ignoreFolders;
+        this.mediaTypeCache = mediaTypeCache;
+    }
+
     public MediaCopier(String inputFolder, String outputFolder, Media media, List<String> ignoreFolders) {
         this.inputFolder = inputFolder;
         this.outputFolder = outputFolder;
         this.media = media;
         this.ignoreFolders = ignoreFolders;
+
+        LoadingCache<Path, String> mediaTypeCacheBackingSource = CacheBuilder.newBuilder()
+                .build(
+                        new CacheLoader<Path, String>() {
+                            @Override
+                            public String load(Path key) {
+                                log.info("Save media type to cache path={}", key);
+                                return getMediaType(key);
+                            }
+                        }
+                );
+
+        this.mediaTypeCache = p -> {
+            try {
+                return mediaTypeCacheBackingSource.get(p);
+            } catch (ExecutionException e) {
+                throw new RuntimeException(e);
+            }
+        };
     }
 
     public Observable<Path> transferFiles(TransferMode transferMode, boolean dryRun) {
@@ -125,7 +145,7 @@ public class MediaCopier {
 
     }
 
-    private Observable<GroupedObservable<String, Path>> getPathsGroupedByMediaType() {
+    Observable<GroupedObservable<String, Path>> getPathsGroupedByMediaType() {
         // Get the paths if it hasn't been retrieved during the dry run
         if (isNull(filteredPaths)) {
             filteredPaths = getFilteredPaths();
@@ -133,37 +153,34 @@ public class MediaCopier {
         return filteredPaths.
                 // Hack to retrieve the media type in an async way
                         flatMap(p -> Observable.from(pool.submit(
-                        () -> new AbstractMap.SimpleEntry<>(mediaTypeCache.get(p), p))))
+                        () -> new AbstractMap.SimpleEntry<>(mediaTypeCache.apply(p), p))))
                 .groupBy(AbstractMap.SimpleEntry::getKey, AbstractMap.SimpleEntry::getValue);
     }
 
-    private Observable<Path> getFilteredPaths() {
-        Stream<Path> pathStream;
-        try {
-            pathStream = Files.walk(Paths.get(inputFolder));
-        } catch (Exception e) {
-            throw new RuntimeException(String.format("Error loading paths from inputFolder=%s", inputFolder), e);
-        }
-
+    Observable<Path> getFilteredPaths() {
         // Create ignore folder filter predicate
         List<String> caseInsensitiveIgnoreFolders = ignoreFolders.stream()
                 .map(String::toLowerCase)
                 .collect(Collectors.toList());
 
-        Func1<Path, Boolean> filterOutIgnoredFolder = p -> caseInsensitiveIgnoreFolders.stream()
-                .noneMatch(ignoreFolder -> p.toString().toLowerCase().contains(ignoreFolder));
-
+        Stream<Path> pathStream;
+        try {
+            pathStream = Files.walk(Paths.get(inputFolder))
+                    .filter(Files::isRegularFile)
+                    .filter(p -> {
+                        try {
+                            return !Files.isHidden(p);
+                        } catch (IOException e) {
+                            throw new RuntimeException(e);
+                        }
+                    })
+                    .filter(p -> caseInsensitiveIgnoreFolders.stream()
+                            .noneMatch(ignoreFolder -> p.toString().toLowerCase().contains(ignoreFolder)));
+        } catch (IOException e) {
+            throw new RuntimeException(String.format("Error loading paths from inputFolder=%s", inputFolder), e);
+        }
 
         return Observable.from(pathStream::iterator)
-                .filter(filterOutIgnoredFolder)
-                .filter(Files::isRegularFile)
-                .filter(p -> {
-                    try {
-                        return !Files.isHidden(p);
-                    } catch (IOException e) {
-                        throw new RuntimeException(e);
-                    }
-                })
                 .cache(); // Make sure it's cached since streams are not reusable
     }
 
@@ -178,8 +195,8 @@ public class MediaCopier {
         Stopwatch stopWatch = Stopwatch.createStarted();
         try (TikaInputStream inputStream = TikaInputStream.get(path)) {
             return tikaConfig.getDetector().detect(inputStream, new Metadata()).getType();
-        } catch (Exception e) {
-            throw new RuntimeException(e);
+        } catch (IOException e) {
+            throw new RuntimeException("Error getting media type of path=" + path, e);
         } finally {
             stopWatch.stop();
             log.info("Took time={} to get media type of {}", stopWatch.toString(), path.getFileName());
