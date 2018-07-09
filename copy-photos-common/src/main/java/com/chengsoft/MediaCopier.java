@@ -1,5 +1,8 @@
 package com.chengsoft;
 
+import com.drew.imaging.ImageMetadataReader;
+import com.drew.metadata.exif.ExifSubIFDDirectory;
+import com.drew.metadata.mp4.Mp4Directory;
 import com.google.common.base.Stopwatch;
 import com.google.common.cache.CacheBuilder;
 import com.google.common.cache.CacheLoader;
@@ -12,9 +15,6 @@ import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.tika.config.TikaConfig;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
-import org.apache.tika.metadata.TikaCoreProperties;
-import org.apache.tika.parser.AutoDetectParser;
-import org.apache.tika.sax.BodyContentHandler;
 import org.jetbrains.annotations.NotNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -23,16 +23,12 @@ import rx.functions.Func1;
 import rx.observables.GroupedObservable;
 
 import java.io.IOException;
-import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.text.SimpleDateFormat;
-import java.util.AbstractMap;
-import java.util.Date;
-import java.util.List;
-import java.util.Optional;
+import java.util.*;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -50,8 +46,9 @@ import static java.util.Objects.isNull;
 //@Data
 public class MediaCopier {
     private static final Logger log = LoggerFactory.getLogger(MediaCopier.class);
-    private static final SimpleDateFormat FOLDER_DATE_FORMAT = new SimpleDateFormat("yyyy/yyyy_MM_dd");
+    static final SimpleDateFormat FOLDER_DATE_FORMAT = new SimpleDateFormat("yyyy/yyyy_MM_dd");
     static final SimpleDateFormat TIKA_DATE_FORMAT = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss");
+    private static final TimeZone UTC = TimeZone.getTimeZone("UTC");
 
     private @NonNull String inputFolder;
     private @NonNull String outputFolder;
@@ -59,7 +56,6 @@ public class MediaCopier {
     private List<String> ignoreFolders;
 
     private TikaConfig tikaConfig = initTika();
-    private AutoDetectParser autoDetectParser = new AutoDetectParser(tikaConfig);
 
     private Observable<Path> filteredPaths;
 
@@ -73,7 +69,7 @@ public class MediaCopier {
             .build(
                     new CacheLoader<Path, FileCopyBean>() {
                         @Override
-                        public FileCopyBean load(Path key) throws Exception {
+                        public FileCopyBean load(Path key) {
                             log.info("Save FileCopyBean to cache path={}", key);
                             return createFileCopyBean(key, outputFolder);
                         }
@@ -176,13 +172,7 @@ public class MediaCopier {
         try {
             pathStream = Files.walk(Paths.get(inputFolder))
                     .filter(Files::isRegularFile)
-                    .filter(p -> {
-                        try {
-                            return !Files.isHidden(p);
-                        } catch (IOException e) {
-                            throw new RuntimeException(e);
-                        }
-                    })
+                    .filter(p -> Try.of(() -> !Files.isHidden(p)).getOrElse(false))
                     .filter(p -> caseInsensitiveIgnoreFolders.stream()
                             .noneMatch(ignoreFolder -> p.toString().toLowerCase().contains(ignoreFolder)));
         } catch (IOException e) {
@@ -225,7 +215,7 @@ public class MediaCopier {
             }
 
             // Decide which transfer mode to use
-            Callable<Path> transferCallable;
+            Callable<Path> transferCallable = null;
             switch (transferMode) {
                 case COPY:
                     transferCallable = () ->
@@ -235,8 +225,6 @@ public class MediaCopier {
                     transferCallable = () ->
                             Files.move(srcImagePath, destImagePath, StandardCopyOption.ATOMIC_MOVE);
                     break;
-                default:
-                    return Observable.error(new RuntimeException("Did not recognize transferMode=%s" + transferMode));
             }
 
             String action = transferMode.toString();
@@ -280,7 +268,7 @@ public class MediaCopier {
      */
     private FileCopyBean createFileCopyBean(Path path, String outputFolder) {
         // Try get the original date
-        Optional<Date> dateTaken = getDateTaken(path, autoDetectParser);
+        Optional<Date> dateTaken = getDateTaken(path);
 
         // Use the last modified date as a last resort
         Date lastModifiedDate = new Date(path.toFile().lastModified());
@@ -302,37 +290,33 @@ public class MediaCopier {
     /**
      * Get the date taken of the media type by using Apache Tika to extract it
      *
-     * @param path             the file path of the media
-     * @param autoDetectParser the parser
+     * @param path the file path of the media
      * @return the optional date
      */
-    Optional<Date> getDateTaken(Path path, AutoDetectParser autoDetectParser) {
-        BodyContentHandler handler = new BodyContentHandler();
-        Metadata metadata = new Metadata();
-        try (InputStream stream = Files.newInputStream(path)) {
-            Stopwatch stopWatch = Stopwatch.createStarted();
-            autoDetectParser.parse(stream, handler, metadata);
-            stopWatch.stop();
-            log.info("Took time={} to get date taken of {}", stopWatch.toString(), path.getFileName());
+    Optional<Date> getDateTaken(Path path) {
+        // Find the original date
+        Stopwatch stopWatch = Stopwatch.createStarted();
+        com.drew.metadata.Metadata extractedMetadata = Try.of(() -> ImageMetadataReader.readMetadata(path.toFile()))
+                .onFailure(e -> log.warn("Failed to extract metadata of path=" + path, e))
+                .getOrElseThrow(ex -> new RuntimeException("Failed to extract metadata of path=" + path, ex));
+        stopWatch.stop();
+        log.info("Took time={} to get date taken of {}", stopWatch.toString(), path.getFileName());
 
-            // Find the created and original date
-            final Option<Date> dateOption = Option.of(metadata.get(TikaCoreProperties.CREATED))
-                    .orElse(() -> Option.of(metadata.get(Metadata.ORIGINAL_DATE)))
-                    .flatMap(this::parseDate);
-
-            // Give precedence to the created date, then try the original one
-            return dateOption.toJavaOptional();
-        } catch (Exception e) {
-            log.warn("[path={}, exception={}]", path, e.getMessage());
-            return Optional.empty();
-        }
+        return this.getExifOriginalDate(extractedMetadata)
+                .orElse(() -> getMp4CreationDate(extractedMetadata))
+                .toJavaOptional();
     }
 
     @NotNull
-    private Option<Date> parseDate(String dateString) {
-        return Try.of(() -> TIKA_DATE_FORMAT.parse(dateString))
-                .onFailure(e -> log.warn("Failed to parse date=" + dateString, e))
-                .toOption();
+    private Option<Date> getMp4CreationDate(com.drew.metadata.Metadata metadata) {
+        return Option.of(metadata.getFirstDirectoryOfType(Mp4Directory.class))
+                .map(d -> d.getDate(Mp4Directory.TAG_CREATION_TIME, UTC));
+    }
+
+    @NotNull
+    private Option<Date> getExifOriginalDate(com.drew.metadata.Metadata metadata) {
+        return Option.of(metadata.getFirstDirectoryOfType(ExifSubIFDDirectory.class))
+                .map(d -> d.getDateOriginal(UTC));
     }
 
     private static TikaConfig initTika() {

@@ -1,25 +1,32 @@
 package com.chengsoft
 
+import com.chengsoft.MediaCopier.FOLDER_DATE_FORMAT
 import com.chengsoft.MediaCopier.TIKA_DATE_FORMAT
-import org.apache.tika.metadata.Metadata
-import org.apache.tika.metadata.TikaCoreProperties
-import org.apache.tika.parser.AutoDetectParser
+import org.apache.commons.imaging.formats.jpeg.exif.ExifRewriter
+import org.apache.commons.imaging.formats.tiff.constants.ExifTagConstants
+import org.apache.commons.imaging.formats.tiff.write.TiffOutputSet
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.catchThrowable
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
-import org.mockito.BDDMockito.*
-import org.mockito.Mockito.mock
+import org.mockito.BDDMockito.willReturn
 import org.mockito.Mockito.spy
-import org.xml.sax.ContentHandler
 import rx.Observable
+import java.io.BufferedOutputStream
 import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
-import java.io.InputStream
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
+import java.nio.file.StandardCopyOption
+import java.nio.file.attribute.BasicFileAttributeView
+import java.nio.file.attribute.FileTime
+import java.time.LocalDateTime
+import java.time.Month
+import java.time.ZoneId
+import java.time.ZoneOffset
 import java.util.*
 import java.util.concurrent.CountDownLatch
 import java.util.stream.Collectors
@@ -183,7 +190,32 @@ class MediaCopierTest {
                     .toTypedArray()
 
 
-    private fun createPhoto(path: Path? = inputFolder.toPath(), prefix: String = "photo_") = Files.createTempFile(path, prefix, ".jpg")
+    private fun createPhoto(path: Path? = inputFolder.toPath(),
+                            prefix: String = "photo_",
+                            creation: LocalDateTime? = null,
+                            lastModified: LocalDateTime? = null): Path {
+        val photo = Files.createTempFile(path, prefix, ".jpg")
+        val sampleJpg = Paths.get(this::class.java.classLoader.getResource("sample.jpg").file)
+
+        Files.copy(sampleJpg, photo, StandardCopyOption.REPLACE_EXISTING)
+
+        if (creation != null) {
+            val creationString = TIKA_DATE_FORMAT.format(Date.from(creation.toInstant(ZoneOffset.UTC)))
+
+            BufferedOutputStream(FileOutputStream(photo.toFile())).use {
+                val outputSet = TiffOutputSet()
+                val exifDirectory = outputSet.orCreateExifDirectory
+                exifDirectory.add(ExifTagConstants.EXIF_TAG_DATE_TIME_ORIGINAL, creationString)
+                ExifRewriter().updateExifMetadataLossless(sampleJpg.toFile(), it, outputSet)
+            }
+        }
+
+        if (lastModified != null) {
+            Files.getFileAttributeView(photo, BasicFileAttributeView::class.java)
+                    .setTimes(FileTime.from(lastModified.toInstant(ZoneOffset.UTC)), null, null)
+        }
+        return photo
+    }
 
     @Test
     fun getPathsGroupedByMediaType() {
@@ -197,7 +229,7 @@ class MediaCopierTest {
         willReturn(filteredPaths).given(mediaCopier).filteredPaths
 
         // when
-        val groupedPaths = mediaCopier.pathsGroupedByMediaType.toMap({it.key}, {it}).toBlocking().single()
+        val groupedPaths = mediaCopier.pathsGroupedByMediaType.toMap({ it.key }, { it }).toBlocking().single()
                 .mapValues { it.value.toList().toBlocking().single() }
 
         // then
@@ -311,10 +343,9 @@ class MediaCopierTest {
         // given
         val photo = createPhoto()
         val mediaCopier = MediaCopier(inputFolder.absolutePath, outputFolder.absolutePath, Media.IMAGE, emptyList())
-        val autoDetectParser = mock(AutoDetectParser::class.java)
 
         // when
-        val dateTaken = mediaCopier.getDateTaken(photo, autoDetectParser)
+        val dateTaken = mediaCopier.getDateTaken(photo)
 
         // then
         assertThat(dateTaken).isNotPresent
@@ -322,56 +353,51 @@ class MediaCopierTest {
 
     @Test
     fun createdDate_has_first_priority() {
+        throw NotImplementedError()
         // given
-        val photo = createPhoto()
-        val mediaCopier = MediaCopier(inputFolder.absolutePath, outputFolder.absolutePath, Media.IMAGE, emptyList())
-
-        val createdDate = Date()
-        val createdDateString = TIKA_DATE_FORMAT.format(createdDate)
-        val originalDate = Date(963068536)
-        val originalDateString = TIKA_DATE_FORMAT.format(originalDate)
-
-        val autoDetectParser = mock(AutoDetectParser::class.java)
-        given(autoDetectParser.parse(any(InputStream::class.java), any(ContentHandler::class.java), any(Metadata::class.java)))
-                .willAnswer {
-                    val (_,_,metadataObject) = it.arguments
-                    val metadata = metadataObject as Metadata
-                    metadata.add(TikaCoreProperties.CREATED, createdDateString)
-                    metadata.add(Metadata.ORIGINAL_DATE, originalDateString)
-                    Unit
-                }
 
         // when
-        val dateTaken = mediaCopier.getDateTaken(photo, autoDetectParser)
 
         // then
-        val parseDate = TIKA_DATE_FORMAT.parse(createdDateString)
-        assertThat(dateTaken).isPresent.hasValue(parseDate)
     }
 
     @Test
     fun createdDate_has_second_priority() {
+        throw NotImplementedError()
         // given
-        val photo = createPhoto()
-        val mediaCopier = MediaCopier(inputFolder.absolutePath, outputFolder.absolutePath, Media.IMAGE, emptyList())
-
-        val originalDate = Date(963068536)
-        val originalDateString = TIKA_DATE_FORMAT.format(originalDate)
-
-        val autoDetectParser = mock(AutoDetectParser::class.java)
-        given(autoDetectParser.parse(any(InputStream::class.java), any(ContentHandler::class.java), any(Metadata::class.java)))
-                .willAnswer {
-                    val (_,_,metadataObject) = it.arguments
-                    val metadata = metadataObject as Metadata
-                    metadata.add(Metadata.ORIGINAL_DATE, originalDateString)
-                    Unit
-                }
 
         // when
-        val dateTaken = mediaCopier.getDateTaken(photo, autoDetectParser)
 
         // then
-        val parseDate = TIKA_DATE_FORMAT.parse(originalDateString)
-        assertThat(dateTaken).isPresent.hasValue(parseDate)
     }
+
+    @Test
+    fun transfer_only_photos() {
+        // given
+        val creationTime1999 = LocalDateTime.of(1999, Month.JANUARY, 1, 0, 0)
+        val creationTime2001 = LocalDateTime.of(2001, Month.JANUARY, 1, 0, 0)
+        val photoFolderA = createFolder("photoFolderA")
+        val photoFolderB = createFolder("photoFolderB")
+        val photoFolderC = createFolder("photoFolderC")
+        val photoA = createPhoto(photoFolderA, "photoA_", creationTime1999)
+        val photoB = createPhoto(photoFolderB, "photoB_", creationTime1999)
+        val photoC = createPhoto(photoFolderC, "photoC_", creationTime2001)
+
+        val mediaCopier = MediaCopier(inputFolder.absolutePath, outputFolder.absolutePath, Media.IMAGE, emptyList()
+        ) { Media.IMAGE.toString() }
+
+        // when
+        val copiedPaths = mediaCopier.transferFiles(TransferMode.COPY, false).toList().toBlocking().single()
+
+        // then
+        val toDestPath = { photo: Path, time: LocalDateTime -> outputFolder.toPath().resolve(time.toFolderName()).resolve(photo.fileName) }
+        assertThat(copiedPaths).hasSize(3)
+                .containsOnly(
+                        toDestPath(photoA, creationTime1999),
+                        toDestPath(photoB, creationTime1999),
+                        toDestPath(photoC, creationTime2001)
+                )
+    }
+
+    private fun LocalDateTime.toFolderName() = FOLDER_DATE_FORMAT.format(Date.from(this.atZone(ZoneId.of("UTC")).toInstant()))
 }
