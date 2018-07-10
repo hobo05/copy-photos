@@ -1,6 +1,7 @@
 package com.chengsoft;
 
 import com.drew.imaging.ImageMetadataReader;
+import com.drew.metadata.Metadata;
 import com.drew.metadata.exif.ExifSubIFDDirectory;
 import com.drew.metadata.mp4.Mp4Directory;
 import com.google.common.base.Stopwatch;
@@ -14,7 +15,6 @@ import lombok.NonNull;
 import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.tika.config.TikaConfig;
 import org.apache.tika.io.TikaInputStream;
-import org.apache.tika.metadata.Metadata;
 import org.jetbrains.annotations.NotNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -46,7 +46,7 @@ import static java.util.Objects.isNull;
 //@Data
 public class MediaCopier {
     private static final Logger log = LoggerFactory.getLogger(MediaCopier.class);
-    static final SimpleDateFormat FOLDER_DATE_FORMAT = new SimpleDateFormat("yyyy/yyyy_MM_dd");
+    private static final SimpleDateFormat FOLDER_DATE_FORMAT = new SimpleDateFormat("yyyy/yyyy_MM_dd");
     static final SimpleDateFormat TIKA_DATE_FORMAT = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss");
     private static final TimeZone UTC = TimeZone.getTimeZone("UTC");
 
@@ -114,7 +114,7 @@ public class MediaCopier {
                                 // Close stream after detecting media type
                                 Stopwatch stopWatch = Stopwatch.createStarted();
                                 try (TikaInputStream inputStream = TikaInputStream.get(key)) {
-                                    return tikaConfig.getDetector().detect(inputStream, new Metadata()).getType();
+                                    return tikaConfig.getDetector().detect(inputStream, new org.apache.tika.metadata.Metadata()).getType();
                                 } catch (IOException e) {
                                     throw new RuntimeException("Error getting media type of path=" + key, e);
                                 } finally {
@@ -296,9 +296,9 @@ public class MediaCopier {
     Optional<Date> getDateTaken(Path path) {
         // Find the original date
         Stopwatch stopWatch = Stopwatch.createStarted();
-        com.drew.metadata.Metadata extractedMetadata = Try.of(() -> ImageMetadataReader.readMetadata(path.toFile()))
+        Metadata extractedMetadata = Try.of(() -> ImageMetadataReader.readMetadata(path.toFile()))
                 .onFailure(e -> log.warn("Failed to extract metadata of path=" + path, e))
-                .getOrElseThrow(ex -> new RuntimeException("Failed to extract metadata of path=" + path, ex));
+                .getOrElse(Metadata::new);
         stopWatch.stop();
         log.info("Took time={} to get date taken of {}", stopWatch.toString(), path.getFileName());
 
@@ -308,13 +308,13 @@ public class MediaCopier {
     }
 
     @NotNull
-    private Option<Date> getMp4CreationDate(com.drew.metadata.Metadata metadata) {
+    private Option<Date> getMp4CreationDate(Metadata metadata) {
         return Option.of(metadata.getFirstDirectoryOfType(Mp4Directory.class))
                 .map(d -> d.getDate(Mp4Directory.TAG_CREATION_TIME, UTC));
     }
 
     @NotNull
-    private Option<Date> getExifOriginalDate(com.drew.metadata.Metadata metadata) {
+    private Option<Date> getExifOriginalDate(Metadata metadata) {
         return Option.of(metadata.getFirstDirectoryOfType(ExifSubIFDDirectory.class))
                 .map(d -> d.getDateOriginal(UTC));
     }
