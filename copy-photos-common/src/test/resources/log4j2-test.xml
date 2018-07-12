@@ -4,14 +4,10 @@
         <Console name="Console" target="SYSTEM_OUT">
             <PatternLayout pattern="%d{HH:mm:ss.SSS} [%t] %-5level %logger{36} - %msg%n"/>
         </Console>
-        <File name="File" fileName="/var/log/copy-photos.log" bufferedIO="true" immediateFlush="true">
-            <PatternLayout pattern="%d{HH:mm:ss.SSS} [%t] %-5level %logger{36} - %msg%n"/>
-        </File>
     </Appenders>
     <Loggers>
-        <Root level="info">
+        <AsyncRoot level="info">
             <AppenderRef ref="Console"/>
-            <AppenderRef ref="File"/>
-        </Root>
+        </AsyncRoot>
     </Loggers>
 </Configuration>

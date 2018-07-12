@@ -4,6 +4,8 @@ import com.chengsoft.Media;
 import com.chengsoft.MediaCopier;
 import com.chengsoft.TransferMode;
 import com.google.common.collect.ImmutableList;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.shell.core.CommandMarker;
 import org.springframework.shell.core.annotation.CliCommand;
 import org.springframework.shell.core.annotation.CliOption;
@@ -12,11 +14,13 @@ import rx.Observable;
 
 import java.nio.file.Path;
 import java.util.List;
-import java.util.Objects;
-import java.util.Optional;
+
+import static java.util.Objects.nonNull;
 
 @Component
 public class PhotoCommands implements CommandMarker {
+
+    private static final Logger log = LoggerFactory.getLogger(PhotoCommands.class);
 
     @CliCommand(value = "start-transfer", help = "Starts the transferring photos or videos")
     public String startTransfer(
@@ -30,7 +34,7 @@ public class PhotoCommands implements CommandMarker {
 
         // Convert ignore folder array to list
         List<String> ignoreFoldersList = ImmutableList.of();
-        if (Objects.nonNull(ignoreFolders))
+        if (nonNull(ignoreFolders))
             ignoreFoldersList = ImmutableList.copyOf(ignoreFolders);
 
         MediaCopier mediaCopier = new MediaCopier(
@@ -39,10 +43,12 @@ public class PhotoCommands implements CommandMarker {
                 media,
                 ignoreFoldersList);
 
-        final Observable<Path> dryRunObservable = mediaCopier.transferFiles(mode, true);
-        final Observable<Path> transferObservable = mediaCopier.transferFiles(mode, false);
-        Optional.ofNullable(limit).ifPresent(dryRunObservable::limit);
-        Optional.ofNullable(limit).ifPresent(transferObservable::limit);
+        Observable<Path> dryRunObservable = mediaCopier.transferFiles(mode, true);
+        Observable<Path> transferObservable = mediaCopier.transferFiles(mode, false);
+        if (nonNull(limit)) {
+            dryRunObservable = dryRunObservable.limit(limit);
+            transferObservable = transferObservable.limit(limit);
+        }
 
         Integer dryRunCount = dryRunObservable
                 .count()
@@ -50,7 +56,9 @@ public class PhotoCommands implements CommandMarker {
                 .single();
 
         if (dryRunCount == 0) {
-            return "Dry run count is 0. No files will be "+mode;
+            String message = "Dry run count is 0. No files will be " + mode;
+            log.info(message);
+            return message;
         }
 
         Integer actualCount = transferObservable
@@ -58,6 +66,8 @@ public class PhotoCommands implements CommandMarker {
                 .toBlocking()
                 .single();
 
-        return String.format("Files attempted to %1$s: %2$d Actual %1$s: %3$d", mode.toString(), dryRunCount, actualCount);
+        String resultMessage = String.format("Files attempted to %1$s: %2$d Actual %1$s: %3$d", mode.toString(), dryRunCount, actualCount);
+        log.info(resultMessage);
+        return resultMessage;
     }
 }
