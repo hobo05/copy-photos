@@ -12,17 +12,24 @@ import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import io.vavr.control.Option;
 import io.vavr.control.Try;
 import lombok.NonNull;
-import org.apache.commons.codec.digest.DigestUtils;
+import net.jpountz.xxhash.StreamingXXHash32;
+import net.jpountz.xxhash.XXHashFactory;
 import org.apache.tika.config.TikaConfig;
 import org.apache.tika.io.TikaInputStream;
 import org.jetbrains.annotations.NotNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import rx.Observable;
+import rx.Single;
 import rx.functions.Func1;
 import rx.observables.GroupedObservable;
+import rx.schedulers.Schedulers;
 
+import java.io.File;
 import java.io.IOException;
+import java.io.RandomAccessFile;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -37,13 +44,13 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import static java.util.Objects.isNull;
+import static java.util.Objects.nonNull;
 
 /**
  * Created by Tim on 8/8/2016.
  *
  * @author tcheng
  */
-//@Data
 public class MediaCopier {
     private static final Logger log = LoggerFactory.getLogger(MediaCopier.class);
     private static final SimpleDateFormat FOLDER_DATE_FORMAT = new SimpleDateFormat("yyyy/yyyy_MM_dd");
@@ -80,7 +87,7 @@ public class MediaCopier {
             .build(
                     new CacheLoader<ChecksumKey, Boolean>() {
                         @Override
-                        public Boolean load(ChecksumKey key) throws Exception {
+                        public Boolean load(ChecksumKey key) {
                             return checksumMatches(key.getSource(), key.getDestination());
                         }
                     }
@@ -104,6 +111,7 @@ public class MediaCopier {
 
     }
 
+    // TODO consolidate media type extraction with getDateTaken()
     private Function<Path, String> defaultMediaTypeResolver() {
         LoadingCache<Path, String> mediaTypeCache = CacheBuilder.newBuilder()
                 .build(
@@ -126,8 +134,8 @@ public class MediaCopier {
                 );
 
         return path -> Try.of(() -> mediaTypeCache.get(path))
-                .onFailure(e -> log.warn("Failed to media type for path=" + path, e))
-                .getOrElse("");
+                .onFailure(e -> log.warn("Failed to extract media type for path=" + path, e))
+                .getOrElse("unknown");
     }
 
     public Observable<Path> transferFiles(TransferMode transferMode, boolean dryRun) {
@@ -248,15 +256,68 @@ public class MediaCopier {
      * @param source      the source
      * @param destination the destination
      * @return checksum matches
-     * @throws IOException IO exception
      */
-    private boolean checksumMatches(Path source, Path destination) throws IOException {
+    private boolean checksumMatches(Path source, Path destination) {
         Stopwatch stopWatch = Stopwatch.createStarted();
-        String srcChecksum = DigestUtils.md5Hex(Files.readAllBytes(source));
-        String destChecksum = DigestUtils.md5Hex(Files.readAllBytes(destination));
+        Observable<Integer> srcChecksumObservable = Observable.fromCallable(() -> hashFile(source.toFile())).subscribeOn(Schedulers.io());
+        Observable<Integer> destChecksumObservable = Observable.fromCallable(() -> hashFile(destination.toFile())).subscribeOn(Schedulers.io());
+        Boolean result = Single.zip(srcChecksumObservable.toSingle(), destChecksumObservable.toSingle(), Integer::equals).toBlocking().value();
         stopWatch.stop();
-        log.info("Took time={} to get checksum of {}", stopWatch.toString(), source.getFileName());
-        return srcChecksum.equals(destChecksum);
+        log.info("Took time={} to compare checksum of {}", stopWatch.toString(), source.getFileName());
+        return result;
+    }
+
+    private int hashFile(File fileToHash) {
+        Stopwatch stopWatch = Stopwatch.createStarted();
+        RandomAccessFile randomAccessFile = null;
+        FileChannel channel = null;
+        try {
+            XXHashFactory factory = XXHashFactory.fastestInstance();
+
+            randomAccessFile = new RandomAccessFile(fileToHash, "r");
+            channel = randomAccessFile.getChannel();
+            ByteBuffer buffer = ByteBuffer.allocate(8192);
+
+            int seed = 0x9747b28c; // used to initialize the hash value, use whatever
+            // value you want, but always the same
+            StreamingXXHash32 hash32 = factory.newStreamingHash32(seed);
+            for (; ; ) {
+                int read = channel.read(buffer);
+                if (read == -1) {
+                    break;
+                }
+                hash32.update(buffer.array(), 0, read);
+                buffer.clear();
+            }
+            return hash32.getValue();
+        } catch (IOException ex) {
+            throw new RuntimeException("Failed to hash file=" + fileToHash, ex);
+        } finally {
+            closeQuietly(randomAccessFile);
+            closeQuietly(channel);
+            stopWatch.stop();
+            log.info("Took time={} to calculate hash of {}", stopWatch.toString(), fileToHash.getAbsolutePath());
+        }
+    }
+
+    private void closeQuietly(RandomAccessFile randomAccessFile) {
+        if (nonNull(randomAccessFile)) {
+            try {
+                randomAccessFile.close();
+            } catch (IOException e) {
+                log.warn("Could not close randomAccessFile=" + randomAccessFile);
+            }
+        }
+    }
+
+    private void closeQuietly(FileChannel fileChannel) {
+        if (nonNull(fileChannel)) {
+            try {
+                fileChannel.close();
+            } catch (IOException e) {
+                log.warn("Could not close fileChanel=" + fileChannel);
+            }
+        }
     }
 
     /**
@@ -297,7 +358,7 @@ public class MediaCopier {
         // Find the original date
         Stopwatch stopWatch = Stopwatch.createStarted();
         Metadata extractedMetadata = Try.of(() -> ImageMetadataReader.readMetadata(path.toFile()))
-                .onFailure(e -> log.warn("Failed to extract metadata of path=" + path, e))
+                .onFailure(e -> log.warn("Failed to extract metadata to get date taken for path=" + path, e))
                 .getOrElse(Metadata::new);
         stopWatch.stop();
         log.info("Took time={} to get date taken of {}", stopWatch.toString(), path.getFileName());

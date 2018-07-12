@@ -407,6 +407,20 @@ class MediaCopierTest {
                 )
     }
 
+    @Test
+    fun transfer_limit() {
+        // given
+        val photoFolder = createFolder("photoFolder")
+        createPhotos(10, photoFolder)
+
+        // when
+        val limit = 5
+        val copiedPaths = defaultMediaCopier().transferFiles(TransferMode.COPY, false).limit(limit).toList().toBlocking().single()
+
+        // then
+        assertThat(copiedPaths).hasSize(limit)
+    }
+
     private fun Path.toDestPath(folders: String) = outputFolder.toPath().resolve(folders).resolve(this.fileName)
 
     private fun defaultMediaCopier(media: Media = Media.IMAGE,
