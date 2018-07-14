@@ -215,7 +215,7 @@ public class MediaCopier {
                         .orElseRun(e -> log.warn("Failed to delete corrupted file=" + destImagePath, e));
                 log.warn("Destination file={} is corrupted. Deleting file.", destImagePath.getFileName());
             } else {
-                log.warn("Destination File={} already exists. Skipping.", destImagePath.getFileName());
+                log.info("Destination File={} already exists. Skipping.", destImagePath.getFileName());
                 return Observable.empty();
             }
         }
