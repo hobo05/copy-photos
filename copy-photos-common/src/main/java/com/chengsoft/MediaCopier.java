@@ -39,6 +39,7 @@ import java.util.*;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -93,22 +94,36 @@ public class MediaCopier {
                     }
             );
 
-    public MediaCopier(String inputFolder, String outputFolder, Media media, List<String> ignoreFolders,
+    private AtomicLong fileSizeCounter;
+    private Long maxTransferLimitMB;
+
+    public MediaCopier(String inputFolder,
+                       String outputFolder,
+                       Media media,
+                       List<String> ignoreFolders,
+                       Long maxTransferLimitMB,
                        Function<Path, String> mediaTypeResolver) {
         this.inputFolder = inputFolder;
         this.outputFolder = outputFolder;
         this.media = media;
         this.ignoreFolders = ignoreFolders;
         this.mediaTypeResolver = mediaTypeResolver;
+        this.fileSizeCounter = new AtomicLong();
+        this.maxTransferLimitMB = maxTransferLimitMB;
     }
 
-    public MediaCopier(String inputFolder, String outputFolder, Media media, List<String> ignoreFolders) {
+    public MediaCopier(String inputFolder,
+                       String outputFolder,
+                       Media media,
+                       Long maxTransferLimitMB,
+                       List<String> ignoreFolders) {
         this.inputFolder = inputFolder;
         this.outputFolder = outputFolder;
         this.media = media;
         this.ignoreFolders = ignoreFolders;
         this.mediaTypeResolver = defaultMediaTypeResolver();
-
+        this.fileSizeCounter = new AtomicLong();
+        this.maxTransferLimitMB = maxTransferLimitMB;
     }
 
     // TODO consolidate media type extraction with getDateTaken()
@@ -150,12 +165,61 @@ public class MediaCopier {
                 .filter(filterByMediaType)
                 .flatMap(a -> a)// unwrap the observable
                 .flatMap(p -> Observable.from(pool.submit(() -> beanCache.get(p))))
+                .flatMap(this::filterAlreadyCopiedFiles)
+                .takeUntil(this::exceedMaxTransferLimit)
                 .flatMap(b -> transferSingleFile(b, transferMode, dryRun)
                         .onErrorResumeNext(throwable -> {
                             log.error("Failed to copy file", throwable);
                             return Observable.empty();
                         }));
 
+    }
+
+    private Boolean exceedMaxTransferLimit(FileCopyBean fileCopyBean) {
+        if (isNull(maxTransferLimitMB)) {
+            return false;
+        }
+        long fileLength = fileCopyBean.getSourcePath().toFile().length();
+        long currentTransferSize = fileSizeCounter.get();
+        long futureSize = currentTransferSize + fileLength;
+        boolean exceedsLimit = futureSize >= maxTransferLimitMB*1024*1024;
+
+        if (exceedsLimit) {
+            log.info("Stopping transfer. Current file=[{}] to transfer has size={} MB. Current transfer size={} MB. Max Limit={} MB",
+                    fileCopyBean.getSourcePath().getFileName().toString(),
+                    fileLength/1024/1024,
+                    currentTransferSize/1024/1024,
+                    maxTransferLimitMB);
+        }
+
+        return exceedsLimit;
+    }
+
+    private Observable<FileCopyBean> filterAlreadyCopiedFiles(FileCopyBean bean) {
+        Path destImagePath = bean.getDestinationPath();
+        Path srcImagePath = bean.getSourcePath();
+
+        // If the file exists
+        if (Files.exists(destImagePath) && Files.isRegularFile(destImagePath)) {
+
+            // Check that the source and destination file checksum match
+            // If not, delete the destination file
+            Boolean checksumMatches = Try.of(() -> checksumCache.get(ChecksumKey.builder()
+                    .source(srcImagePath)
+                    .destination(destImagePath)
+                    .build()))
+                    .onFailure(e -> log.warn("Failed to delete corrupted file=" + destImagePath, e))
+                    .getOrElse(false);
+            if (!checksumMatches) {
+                Try.of(() -> Files.deleteIfExists(destImagePath))
+                        .orElseRun(e -> log.warn("Failed to delete corrupted file=" + destImagePath, e));
+                log.warn("Destination file={} is corrupted. Deleting file.", destImagePath.getFileName());
+            } else {
+                log.warn("Destination File={} already exists. Skipping.", destImagePath.getFileName());
+                return Observable.empty();
+            }
+        }
+        return Observable.just(bean);
     }
 
     Observable<GroupedObservable<String, Path>> getPathsGroupedByMediaType() {
@@ -203,25 +267,6 @@ public class MediaCopier {
                 log.info("Directory={} not found. Creating automatically.", destFolderPath);
             }
 
-
-            // If the file exists
-            if (Files.exists(destImagePath) && Files.isRegularFile(destImagePath)) {
-
-                // Check that the source and destination file checksum match
-                // If not, delete the destination file
-                Boolean checksumMatches = checksumCache.get(ChecksumKey.builder()
-                        .source(srcImagePath)
-                        .destination(destImagePath)
-                        .build());
-                if (!checksumMatches) {
-                    Files.delete(destImagePath);
-                    log.warn("Destination file={} is corrupted. Overwriting file.", destImagePath.getFileName());
-                } else {
-                    log.warn("Destination File={} already exists. Skipping.", destImagePath.getFileName());
-                    return Observable.empty();
-                }
-            }
-
             // Decide which transfer mode to use
             Callable<Path> transferCallable = null;
             switch (transferMode) {
@@ -238,7 +283,10 @@ public class MediaCopier {
             String action = transferMode.toString();
             if (!dryRun) {
                 return Observable.from(pool.submit(transferCallable))
-                        .doOnCompleted(() -> log.info("{} [srcImage={}, destImagePath={}]", action, srcImagePath.getFileName(), destImagePath));
+                        .doOnCompleted(() -> {
+                            fileSizeCounter.addAndGet(destImagePath.toFile().length());
+                            log.info("{} [srcImage={}, destImagePath={}]", action, srcImagePath.getFileName(), destImagePath);
+                        });
             } else {
                 log.info("Simulated {} [srcImage={}, destImagePath={}]", action, srcImagePath.getFileName(), destImagePath);
             }

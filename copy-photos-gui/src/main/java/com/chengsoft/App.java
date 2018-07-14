@@ -45,8 +45,8 @@ import java.util.stream.Stream;
  */
 public class App extends Application implements Initializable {
     private static final Logger logger = LoggerFactory.getLogger(App.class);
-    public static final String ERROR_LOG_FILENAME_PROP = "errorLogFilename";
-    public static final String ERROR_LOG_FILENAME = "error.log";
+    private static final String ERROR_LOG_FILENAME_PROP = "errorLogFilename";
+    private static final String ERROR_LOG_FILENAME = "error.log";
 
     @FXML
     private TextField textFieldSourceFolder;
@@ -82,9 +82,9 @@ public class App extends Application implements Initializable {
 
     @Override
     public void start(Stage stage) throws Exception {
-        this.stage = stage;
+        App.stage = stage;
         stage.setTitle("Copy Photos");
-        Parent root = FXMLLoader.load(getClass().getClassLoader().getResource("gui.fxml"));
+        Parent root = FXMLLoader.load(Objects.requireNonNull(getClass().getClassLoader().getResource("gui.fxml")));
         stage.setScene(new Scene(root));
         stage.show();
     }
@@ -138,7 +138,7 @@ public class App extends Application implements Initializable {
                     textFieldSourceFolder.getText(),
                     textFieldDestFolder.getText(),
                     Media.ALL,
-                    ignoreFolderList);
+                    null, ignoreFolderList);
 
             Integer dryRunCount = mediaCopier.transferFiles(com.chengsoft.TransferMode.COPY, true)
                     .count()

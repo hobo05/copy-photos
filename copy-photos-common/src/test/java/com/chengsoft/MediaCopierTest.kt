@@ -14,10 +14,7 @@ import org.junit.rules.TemporaryFolder
 import org.mockito.BDDMockito.willReturn
 import org.mockito.Mockito.spy
 import rx.Observable
-import java.io.BufferedOutputStream
-import java.io.File
-import java.io.FileOutputStream
-import java.io.IOException
+import java.io.*
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
@@ -63,7 +60,7 @@ class MediaCopierTest {
     fun throws_exception_on_nonexistent_path() {
         // given
         val nonExistentPath = inputFolder.resolve("nonExistentFolder")
-        val mediaCopier = MediaCopier(nonExistentPath.absolutePath, outputFolder.absolutePath, Media.IMAGE, emptyList())
+        val mediaCopier = MediaCopier(nonExistentPath.absolutePath, outputFolder.absolutePath, Media.IMAGE, null, emptyList())
 
         // when
         val thrown = catchThrowable { mediaCopier.filteredPaths.toList().toBlocking().single() }
@@ -253,18 +250,19 @@ class MediaCopierTest {
     @Test
     fun transfer_file_does_not_overwrite_same_file() {
         // given
-        val sourcePhoto = createPhoto()
-        val destinationFolder = outputFolder.toPath()
+        val creationTime1999 = LocalDateTime.of(1999, Month.JANUARY, 1, 0, 0)
+        val sourcePhoto = createPhoto(creation = creationTime1999)
+        val destinationFolder = outputFolder.toPath().resolve("1999/1999_01_01")
+        Files.createDirectories(destinationFolder)
         val destinationPath = destinationFolder.resolve(sourcePhoto.fileName)
-        val copyBean = FileCopyBean(sourcePhoto, destinationFolder, destinationPath)
 
         Files.copy(sourcePhoto, destinationPath)
 
         // when
-        val copiedPhoto = defaultMediaCopier().transferSingleFile(copyBean, TransferMode.COPY, false).toBlocking().singleOrDefault(null)
+        val copiedPhoto = defaultMediaCopier().transferFiles(TransferMode.COPY, false).toList().toBlocking().singleOrDefault(emptyList())
 
         // then
-        assertThat(copiedPhoto).isNull()
+        assertThat(copiedPhoto).isEmpty()
 
     }
 
@@ -274,18 +272,16 @@ class MediaCopierTest {
         val sourcePhoto = createPhoto()
         val destinationFolder = outputFolder.toPath()
         val destinationPath = destinationFolder.resolve(sourcePhoto.fileName)
-        val copyBean = FileCopyBean(sourcePhoto, destinationFolder, destinationPath)
 
         val fileWithDifferentContent = Files.createFile(destinationPath)
         fileWithDifferentContent.toFile().writeText("different file")
 
         // when
-        val copiedPhoto = defaultMediaCopier().transferSingleFile(copyBean, TransferMode.COPY, false).toBlocking().singleOrDefault(null)
+        val copiedPhoto = defaultMediaCopier().transferFiles(TransferMode.COPY, false).toList().toBlocking().singleOrDefault(emptyList())
 
         // then
-        assertThat(copiedPhoto)
-                .isNotNull()
-                .isRegularFile()
+        assertThat(copiedPhoto).hasSize(1)
+        assertThat(copiedPhoto[0].toFile().readBytes()).isEqualTo(sourcePhoto.toFile().readBytes())
 
     }
 
@@ -421,16 +417,43 @@ class MediaCopierTest {
         assertThat(copiedPaths).hasSize(limit)
     }
 
+    @Test
+    fun transfer_size_limit() {
+        // given
+        val MB: Long = 1024 * 1024
+        val createFileWithMB = { megabytes: Int ->
+            val sizedFile = Files.createTempFile(inputFolder.toPath(), "${megabytes}_MB_", ".jpg")
+            val f = RandomAccessFile(sizedFile.toFile(), "rw")
+            f.setLength(megabytes * MB)
+            sizedFile
+        }
+
+        for (i in 1..3) createFileWithMB(4)
+
+        val mediaCopier = defaultMediaCopier(Media.ALL, maxTransferLimitMB = 10)
+
+        // when
+        val copiedPaths = mediaCopier.transferFiles(TransferMode.COPY, false).toList().toBlocking().single();
+
+        // then
+        val totalSize = copiedPaths
+                .map { it.toFile().length() }
+                .sum()
+        println("totalSize=$totalSize")
+        assertThat(totalSize).isLessThanOrEqualTo(10 * MB)
+    }
+
     private fun Path.toDestPath(folders: String) = outputFolder.toPath().resolve(folders).resolve(this.fileName)
 
     private fun defaultMediaCopier(media: Media = Media.IMAGE,
                                    ignoreFolders: List<String> = emptyList(),
+                                   maxTransferLimitMB: Long? = null,
                                    mediaTypeResolver: ((Path) -> String)? = null
     ): MediaCopier {
         return if (mediaTypeResolver != null) {
-            MediaCopier(inputFolder.absolutePath, outputFolder.absolutePath, media, ignoreFolders, mediaTypeResolver)
+            MediaCopier(inputFolder.absolutePath, outputFolder.absolutePath, media, ignoreFolders, maxTransferLimitMB, mediaTypeResolver)
         } else {
-            MediaCopier(inputFolder.absolutePath, outputFolder.absolutePath, media, ignoreFolders)
+            MediaCopier(inputFolder.absolutePath, outputFolder.absolutePath, media, maxTransferLimitMB, ignoreFolders)
         }
     }
 

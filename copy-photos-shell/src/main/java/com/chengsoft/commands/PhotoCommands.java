@@ -29,7 +29,8 @@ public class PhotoCommands implements CommandMarker {
             @CliOption(key = {"type"}, unspecifiedDefaultValue = "ALL", help = "The file types to transfer") final Media media,
             @CliOption(key = {"mode"}, unspecifiedDefaultValue = "COPY", help = "The transfer mode") final TransferMode mode,
             @CliOption(key = {"ignoreFolders"}, help = "Folders to ignore") final String[] ignoreFolders,
-            @CliOption(key = {"limit"}, help = "limit number of files to transfer") final Integer limit
+            @CliOption(key = {"limit"}, help = "limit number of files to transfer") final Integer limit,
+            @CliOption(key = {"maxSizeMB"}, help = "limit number of MBs to transfer") final Long maxSizeMB
     ) {
 
         // Convert ignore folder array to list
@@ -41,6 +42,7 @@ public class PhotoCommands implements CommandMarker {
                 source.toString(),
                 dest.toString(),
                 media,
+                maxSizeMB,
                 ignoreFoldersList);
 
         Observable<Path> dryRunObservable = mediaCopier.transferFiles(mode, true);

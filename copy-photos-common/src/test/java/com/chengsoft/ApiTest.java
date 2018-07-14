@@ -3,7 +3,6 @@ package com.chengsoft;
 import com.google.common.collect.ImmutableList;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.tika.config.TikaConfig;
-import org.apache.tika.exception.TikaException;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.metadata.TikaCoreProperties;
@@ -11,7 +10,6 @@ import org.apache.tika.parser.AutoDetectParser;
 import org.apache.tika.sax.BodyContentHandler;
 import org.junit.Ignore;
 import org.junit.Test;
-import org.xml.sax.SAXException;
 import rx.Observable;
 import rx.observables.GroupedObservable;
 
@@ -37,7 +35,7 @@ import java.util.stream.Stream;
 public class ApiTest {
 
     @Test
-    public void testCopyPhotos() throws IOException {
+    public void testCopyPhotos() {
 
         List<String> ignoreFolders = ImmutableList.of("Thumbs");
 
@@ -51,7 +49,7 @@ public class ApiTest {
                 inputFolder,
                 outputFolder,
                 Media.IMAGE,
-                ignoreFolders);
+                null, ignoreFolders);
         mediaCopier.transferFiles(TransferMode.COPY, true)
                 .count()
                 .subscribe(c -> log.info("Files to copy: {}", c));
@@ -62,7 +60,7 @@ public class ApiTest {
     }
 
     @Test
-    public void testDetectMetadata() throws IOException, TikaException, SAXException, ParseException {
+    public void testDetectMetadata() throws IOException {
 
 //        List<String> ignoreFolders = ImmutableList.of("Thumbs");
 //
