@@ -42,8 +42,8 @@ public class PhotoCommands implements CommandMarker {
                 source.toString(),
                 dest.toString(),
                 media,
-                maxSizeMB,
-                ignoreFoldersList);
+                ignoreFoldersList,
+                maxSizeMB, null);
 
         Observable<Path> dryRunObservable = mediaCopier.transferFiles(mode, true);
         Observable<Path> transferObservable = mediaCopier.transferFiles(mode, false);

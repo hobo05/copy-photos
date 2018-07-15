@@ -74,6 +74,7 @@ public class App extends Application implements Initializable {
                     && db.getFiles().size() == 1
                     && db.getFiles().get(0).isDirectory();
 
+    @SuppressWarnings("OptionalUsedAsFieldOrParameterType")
     private Optional<Path> errorLogPath = Optional.empty();
 
     public static void main(String[] args) {
@@ -138,7 +139,9 @@ public class App extends Application implements Initializable {
                     textFieldSourceFolder.getText(),
                     textFieldDestFolder.getText(),
                     Media.ALL,
-                    null, ignoreFolderList);
+                    ignoreFolderList,
+                    null,
+                    null);
 
             Integer dryRunCount = mediaCopier.transferFiles(com.chengsoft.TransferMode.COPY, true)
                     .count()
@@ -177,10 +180,10 @@ public class App extends Application implements Initializable {
         try {
             new PrintWriter(errorLogPath.get().toFile()).close();
         } catch (IOException e) {
-            logger.error("Failed to clear content of errorLog={}", errorLogPath.get());
+            logger.error("Failed to clear content of errorLog={}", errorLogPath.orElse(Paths.get("absent")));
         }
 
-        System.setProperty(ERROR_LOG_FILENAME_PROP, errorLogPath.get().toString());
+        System.setProperty(ERROR_LOG_FILENAME_PROP, errorLogPath.orElse(Paths.get("absent")).toString());
         LoggerContext context = (LoggerContext) LogManager.getContext(false);
         context.reconfigure();
     }
@@ -230,7 +233,7 @@ public class App extends Application implements Initializable {
     private void chooseFolder(TextField textField, String type) {
         directoryChooser.setTitle(String.format("Choose %s image folder", type));
         directoryChooser.setInitialDirectory(new File(System.getProperty("user.home")));
-        Optional.ofNullable(directoryChooser.showDialog(this.stage))
+        Optional.ofNullable(directoryChooser.showDialog(stage))
                 .ifPresent(f -> {
                     logger.info("{} folder set as {}", type, f.getAbsolutePath());
                     textField.setText(f.getAbsolutePath());

@@ -23,6 +23,7 @@
         <rxjava.version>1.2.1</rxjava.version>
         <tika-parsers.version>1.13</tika-parsers.version>
         <kotlin.version>1.2.51</kotlin.version>
+        <kotlin.compiler.incremental>true</kotlin.compiler.incremental>
     </properties>
 
     <dependencies>
@@ -138,6 +139,8 @@
     </repositories>
 
     <build>
+        <sourceDirectory>${project.basedir}/src/main/kotlin</sourceDirectory>
+        <testSourceDirectory>${project.basedir}/src/test/kotlin</testSourceDirectory>
         <plugins>
             <plugin>
                 <groupId>org.jetbrains.kotlin</groupId>

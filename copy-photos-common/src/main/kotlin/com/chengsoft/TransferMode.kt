@@ -1,11 +1,11 @@
-package com.chengsoft;
+package com.chengsoft
 
 /**
  * Copy or move!
  *
  * @author tcheng
  */
-public enum TransferMode {
+enum class TransferMode {
     COPY,
     MOVE
 }
