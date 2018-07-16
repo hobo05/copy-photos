@@ -31,7 +31,6 @@ import java.nio.file.StandardCopyOption
 import java.text.SimpleDateFormat
 import java.util.*
 import java.util.Objects.isNull
-import java.util.Objects.nonNull
 import java.util.concurrent.Callable
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
@@ -61,8 +60,8 @@ class MediaCopier(private val inputFolder: String,
 
     private val beanCache = CacheBuilder.newBuilder()
             .build(
-                    object : CacheLoader<Path, FileCopyBean>() {
-                        override fun load(key: Path): FileCopyBean {
+                    object : CacheLoader<Pair<String, Path>, FileCopyBean>() {
+                        override fun load(key: Pair<String, Path>): FileCopyBean {
                             log.info("Save FileCopyBean to cache path={}", key)
                             return createFileCopyBean(key, outputFolder)
                         }
@@ -88,7 +87,7 @@ class MediaCopier(private val inputFolder: String,
         }
 
         return filteredPaths!!
-                .flatMap<Pair<String, Path>> { p -> Observable.from(pool.submit(Callable { Pair(mediaTypeResolver.invoke(p), p) })) }
+                .flatMap { p -> { Pair(mediaTypeResolver.invoke(p), p) }.toAsyncObservable() }
                 .groupBy({ it.first }, { it.second })
     }
 
@@ -127,19 +126,19 @@ class MediaCopier(private val inputFolder: String,
     fun transferFiles(transferMode: TransferMode, dryRun: Boolean): Observable<Path> {
 
         // Choose which media type to filter by
-        var filterByMediaType = { go: GroupedObservable<String, Path> -> go.key == media.value }
-        if (Media.ALL === media) {
-            filterByMediaType = { true }
-        }
+        val filterByMediaType: (GroupedObservable<String, Path>) -> Boolean =
+                when (media) {
+                    Media.ALL -> { _ -> true }
+                    else -> { g -> g.key == media.value }
+                }
 
         return pathsGroupedByMediaType()
                 .filter(filterByMediaType)
-                .flatMap { a -> a }// unwrap the observable
-                .flatMap { p -> Observable.from(pool.submit<FileCopyBean> { beanCache.get(p) }) }
+                .flatMap { groupedObservable -> groupedObservable.flatMap { path -> { beanCache.get(Pair(groupedObservable.key, path)) }.toAsyncObservable() } }
                 .flatMap { this.filterAlreadyCopiedFiles(it) }
                 .takeUntil { this.exceedMaxTransferLimit(it) }
-                .flatMap { b ->
-                    transferSingleFile(b, transferMode, dryRun)
+                .flatMap {
+                    transferSingleFile(it, transferMode, dryRun)
                             .onErrorResumeNext { throwable ->
                                 log.error("Failed to copy file", throwable)
                                 Observable.empty()
@@ -147,6 +146,9 @@ class MediaCopier(private val inputFolder: String,
                 }
 
     }
+
+    private fun <T> Callable<T>.toAsyncObservable() = Observable.from(pool.submit(this))
+    private fun <T> (() -> T).toAsyncObservable() = Observable.from(pool.submit(this))
 
     private fun exceedMaxTransferLimit(fileCopyBean: FileCopyBean): Boolean? {
         if (isNull(maxTransferLimitMB)) {
@@ -233,7 +235,7 @@ class MediaCopier(private val inputFolder: String,
 
             val action = transferMode.toString()
             if (!dryRun) {
-                return Observable.from(pool.submit(transferCallable))
+                return transferCallable.toAsyncObservable()
                         .doOnCompleted {
                             fileSizeCounter.addAndGet(destImagePath.toFile().length())
                             log.info("{} [srcImage={}, destImagePath={}]", action, srcImagePath.fileName, destImagePath)
@@ -293,43 +295,22 @@ class MediaCopier(private val inputFolder: String,
         } catch (ex: IOException) {
             throw RuntimeException("Failed to hash file=$fileToHash", ex)
         } finally {
-            closeQuietly(randomAccessFile)
-            closeQuietly(channel)
+            randomAccessFile?.run { this.close() }
+            channel?.run { this.close() }
             stopWatch.stop()
             log.info("Took time={} to calculate hash of {}", stopWatch.toString(), fileToHash.absolutePath)
-        }
-    }
-
-    private fun closeQuietly(randomAccessFile: RandomAccessFile?) {
-        if (nonNull(randomAccessFile)) {
-            try {
-                randomAccessFile!!.close()
-            } catch (e: IOException) {
-                log.warn("Could not close randomAccessFile=" + randomAccessFile!!)
-            }
-
-        }
-    }
-
-    private fun closeQuietly(fileChannel: FileChannel?) {
-        if (nonNull(fileChannel)) {
-            try {
-                fileChannel!!.close()
-            } catch (e: IOException) {
-                log.warn("Could not close fileChanel=" + fileChannel!!)
-            }
-
         }
     }
 
     /**
      * Create the [FileCopyBean] by pulling the EXIF data and creating the destination path and folder
      *
-     * @param path         the source Path
+     * @param mediaTypePath the media type and source Path
      * @param outputFolder the output folder
      * @return the [FileCopyBean]
      */
-    private fun createFileCopyBean(path: Path, outputFolder: String): FileCopyBean {
+    private fun createFileCopyBean(mediaTypePath: Pair<String, Path>, outputFolder: String): FileCopyBean {
+        val (mediaType, path) = mediaTypePath
         // Try get the original date
         val dateTaken = getDateTaken(path)
 
@@ -341,9 +322,10 @@ class MediaCopier(private val inputFolder: String,
         val folderName = dateTaken.map { FOLDER_DATE_FORMAT.format(it) }
                 .orElse("lastModifiedDate/" + FOLDER_DATE_FORMAT.format(lastModifiedDate))
 
-        // TODO if the media type is ALL, create a new folder per media type e.g. fileA.jpg -> outputFolder/PHOTO/2017/2017_01_01/fileA.jpg
-
-        val destFolderPath = Paths.get(outputFolder).resolve(folderName)
+        val destFolderPath = when (media) {
+            Media.ALL -> Paths.get(outputFolder).resolve(mediaType).resolve(folderName)
+            else -> Paths.get(outputFolder).resolve(folderName)
+        }
         val destImagePath = destFolderPath.resolve(path.fileName)
 
         return FileCopyBean(path, destFolderPath, destImagePath)

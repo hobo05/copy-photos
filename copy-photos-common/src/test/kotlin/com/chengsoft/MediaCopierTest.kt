@@ -388,7 +388,7 @@ class MediaCopierTest {
     }
 
     @Test
-    fun transfer_all_files() {
+    fun transfer_all_files_creates_folder_for_each_media_type() {
         // given
         val creationDateTime = LocalDateTime.of(2029, Month.JANUARY, 22, 0, 0)
         val mixMediaFolder = createFolder("mixMediaFolder")
@@ -404,9 +404,9 @@ class MediaCopierTest {
         // then
         assertThat(copiedPaths).hasSize(3)
                 .containsOnly(
-                        photo.toDestPath("2029/2029_01_22"),
-                        video.toDestPath("2018/2018_07_10"),
-                        textFile.toDestPath("lastModifiedDate/2029/2029_01_22")
+                        photo.toDestPath("image/2029/2029_01_22"),
+                        video.toDestPath("video/2018/2018_07_10"),
+                        textFile.toDestPath("text/lastModifiedDate/2029/2029_01_22")
                 )
     }
 
