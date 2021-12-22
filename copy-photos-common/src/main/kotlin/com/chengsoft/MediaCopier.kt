@@ -28,7 +28,8 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
 import java.nio.file.StandardCopyOption
-import java.text.SimpleDateFormat
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
 import java.util.*
 import java.util.Objects.isNull
 import java.util.concurrent.Callable
@@ -197,7 +198,7 @@ class MediaCopier(private val inputFolder: String,
     internal fun getFilteredPaths(): Observable<Path> {
         // Create ignore folder filter predicate
         val caseInsensitiveIgnoreFolders = ignoreFolders
-                .map { it.toLowerCase() }
+                .map { it.lowercase(Locale.US) }
 
         val pathStream: Stream<Path>
         try {
@@ -205,7 +206,7 @@ class MediaCopier(private val inputFolder: String,
                     .filter { Files.isRegularFile(it) }
                     .filter { p -> Try.of { !Files.isHidden(p) }.getOrElse(false) }
                     .filter { p ->
-                        caseInsensitiveIgnoreFolders.none { ignoreFolder -> p.toString().toLowerCase().contains(ignoreFolder) }
+                        caseInsensitiveIgnoreFolders.none { ignoreFolder -> p.toString().lowercase(Locale.US).contains(ignoreFolder) }
                     }
         } catch (e: IOException) {
             throw RuntimeException("Error loading paths from inputFolder=$inputFolder", e)
@@ -312,14 +313,14 @@ class MediaCopier(private val inputFolder: String,
     private fun createFileCopyBean(mediaTypePath: Pair<String, Path>, outputFolder: String): FileCopyBean {
         val (mediaType, path) = mediaTypePath
         // Try get the original date
-        val dateTaken = getDateTaken(path)
+        val dateTaken = getDateTaken(path).map(Date::toInstant)
 
         // Use the last modified date as a last resort
-        val lastModifiedDate = Date(path.toFile().lastModified())
+        val lastModifiedDate = Date(path.toFile().lastModified()).toInstant()
 
         log.debug("[dateTaken={}, lastModified={}, path={}]", dateTaken, lastModifiedDate, path)
 
-        val folderName = dateTaken.map { FOLDER_DATE_FORMAT.format(it) }
+        val folderName = dateTaken.map(FOLDER_DATE_FORMAT::format)
                 .orElse("lastModifiedDate/" + FOLDER_DATE_FORMAT.format(lastModifiedDate))
 
         val destFolderPath = when (media) {
@@ -369,7 +370,7 @@ class MediaCopier(private val inputFolder: String,
 
     companion object {
         private val log = LoggerFactory.getLogger(MediaCopier::class.java)
-        private val FOLDER_DATE_FORMAT = SimpleDateFormat("yyyy/yyyy_MM_dd")
+        private val FOLDER_DATE_FORMAT = DateTimeFormatter.ofPattern("yyyy/yyyy_MM_dd").withZone(ZoneOffset.UTC)
         private val UTC = TimeZone.getTimeZone("UTC")
 
         private fun initTika(): TikaConfig {

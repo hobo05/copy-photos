@@ -25,6 +25,7 @@ import java.text.SimpleDateFormat
 import java.time.LocalDateTime
 import java.time.Month
 import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
 import java.util.*
 import java.util.concurrent.CountDownLatch
 import java.util.stream.Collectors
@@ -44,7 +45,7 @@ class MediaCopierTest {
     }
 
     companion object {
-        val TIKA_DATE_FORMAT = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss")
+        val TIKA_DATE_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss").withZone(ZoneOffset.UTC)
     }
 
     @Test
@@ -359,7 +360,7 @@ class MediaCopierTest {
     @Test
     fun transfer_only_photos() {
         // given
-        val creationDateTime = LocalDateTime.of(2029, Month.JANUARY, 22, 0, 0)
+        val creationDateTime = LocalDateTime.parse("2029-01-22T00:00:00")
         val mixMediaFolder = createFolder("mixMediaFolder")
         val photo = createPhoto(mixMediaFolder, creation = creationDateTime)
         createVideo(mixMediaFolder)
@@ -384,7 +385,7 @@ class MediaCopierTest {
 
         // then
         assertThat(copiedPaths).hasSize(1)
-                .containsOnly(video.toDestPath("2018/2018_07_10"))
+                .containsOnly(video.toDestPath("2018/2018_07_11"))
     }
 
     @Test
@@ -405,7 +406,7 @@ class MediaCopierTest {
         assertThat(copiedPaths).hasSize(3)
                 .containsOnly(
                         photo.toDestPath("image/2029/2029_01_22"),
-                        video.toDestPath("video/2018/2018_07_10"),
+                        video.toDestPath("video/2018/2018_07_11"),
                         textFile.toDestPath("text/lastModifiedDate/2029/2029_01_22")
                 )
     }
@@ -471,13 +472,13 @@ class MediaCopierTest {
                             prefix: String = "photo_",
                             creation: LocalDateTime? = null,
                             lastModified: LocalDateTime? = null): Path {
-        val photo = Files.createTempFile(path, prefix, ".jpg")
-        val sampleJpg = Paths.get(this::class.java.classLoader.getResource("sample.jpg").file)
+        val photo = Files.createTempFile(path!!, prefix, ".jpg")
+        val sampleJpg = Paths.get(this::class.java.classLoader.getResource("sample.jpg")!!.file)
 
         Files.copy(sampleJpg, photo, StandardCopyOption.REPLACE_EXISTING)
 
         if (creation != null) {
-            val creationString = TIKA_DATE_FORMAT.format(Date.from(creation.toInstant(ZoneOffset.UTC)))
+            val creationString = TIKA_DATE_FORMAT.format(creation.toInstant(ZoneOffset.UTC))
 
             BufferedOutputStream(FileOutputStream(photo.toFile())).use {
                 val outputSet = TiffOutputSet()
@@ -492,11 +493,11 @@ class MediaCopierTest {
         return photo
     }
 
-    private fun createVideo(path: Path? = inputFolder.toPath(),
+    private fun createVideo(path: Path = inputFolder.toPath(),
                             prefix: String = "video_",
                             lastModified: LocalDateTime? = null): Path {
-        val video = Files.createTempFile(path, prefix, ".jpg")
-        val sampleVideo = Paths.get(this::class.java.classLoader.getResource("sample.m4v").file)
+        val video = Files.createTempFile(path, prefix, ".mp4")
+        val sampleVideo = Paths.get(this::class.java.classLoader.getResource("sample.m4v")!!.file)
 
         Files.copy(sampleVideo, video, StandardCopyOption.REPLACE_EXISTING)
 
