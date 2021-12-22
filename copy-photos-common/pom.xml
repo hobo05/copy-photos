@@ -17,7 +17,7 @@
 
     <properties>
         <lombok.version>1.16.10</lombok.version>
-        <guava.version>19.0</guava.version>
+        <guava.version>30.0-jre</guava.version>
         <apache-poi.version>3.17</apache-poi.version>
         <commons-codec.version>1.10</commons-codec.version>
         <rxjava.version>1.2.1</rxjava.version>
